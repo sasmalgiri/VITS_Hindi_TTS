@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=65", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hindi-tts-builder"
+version = "0.1.0"
+description = "Build a private Hindi TTS engine from YouTube videos and SRT transcripts"
+requires-python = ">=3.10"
+readme = "README.md"
+authors = [{name = "Shirshendu"}]
+
+[project.scripts]
+hindi-tts-builder = "hindi_tts_builder.cli.main:cli"
+
+[tool.setuptools.packages.find]
+include = ["hindi_tts_builder*"]

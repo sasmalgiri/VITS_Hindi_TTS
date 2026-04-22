@@ -1,0 +1,43 @@
+# Core
+torch>=2.3.0
+torchaudio>=2.3.0
+numpy<2.0
+scipy
+tqdm
+pyyaml
+click
+
+# YouTube download
+yt-dlp>=2024.8.0
+
+# Audio processing
+librosa>=0.10.0
+soundfile
+pydub
+webrtcvad
+
+# Transcription / alignment / validation
+openai-whisper>=20231117
+whisperx>=3.1.0
+faster-whisper>=1.0.0
+
+# Hindi text processing
+indic-nlp-library>=0.92
+num2words>=0.5.13
+regex
+unicodedata2
+
+# Model training
+coqui-tts>=0.22.0
+
+# Neural metrics
+torchmetrics
+
+# Inference API
+fastapi
+uvicorn
+pydantic
+
+# Dev / testing
+pytest
+pytest-cov

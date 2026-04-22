@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+.pytest_cache/
+.coverage
+.tox/
+venv/
+.venv/
+env/
+
+# Project data (large; should not be committed)
+projects/
+*.wav
+*.mp3
+*.pt
+*.pth
+*.ckpt
+wandb/
+runs/
+tensorboard/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Packaging
+dist/
+build/
+*.whl
