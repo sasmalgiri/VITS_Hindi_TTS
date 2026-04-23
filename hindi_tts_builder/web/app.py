@@ -68,6 +68,9 @@ def create_app(projects_root: Path):
         urls: str = Form(...),
         srt_files: List[UploadFile] = File(...),
     ):
+        import shutil
+        import sys
+        import traceback
         from hindi_tts_builder.utils.project import create_project as create_proj
         from hindi_tts_builder.data.pipeline import add_sources_from_files
 
@@ -90,29 +93,33 @@ def create_app(projects_root: Path):
         proj_dir = projects_root / name
         if proj_dir.exists():
             raise HTTPException(409, f"project '{name}' already exists")
-        paths = create_proj(projects_root, name)
 
-        # Persist URLs + SRTs to a temporary "sources" staging area so we can
-        # reuse the existing add_sources_from_files() helper.
-        staging = paths.root / "_staging"
-        staging.mkdir(parents=True, exist_ok=True)
-        urls_file = staging / "urls.txt"
-        urls_file.write_text("\n".join(url_lines) + "\n", encoding="utf-8")
-        # SRTs: name them by zero-padded index so sorted() order matches URL order.
-        for i, f in enumerate(srt_files):
-            data = await f.read()
-            target = staging / f"{i:05d}_{_safe_filename(f.filename or f'cue_{i}.srt')}"
-            target.write_bytes(data)
-
+        # Wrap the whole creation flow so unexpected errors come back as 500s
+        # with a useful message instead of a bare "Internal Server Error".
         try:
-            added = add_sources_from_files(paths, urls_file, staging)
-        except Exception as e:
-            raise HTTPException(400, f"failed to register sources: {e}")
-        finally:
-            import shutil
-            shutil.rmtree(staging, ignore_errors=True)
+            paths = create_proj(projects_root, name)
 
-        return {"name": name, "added": added, "summary": _project_summary(proj_dir, registry)}
+            staging = paths.root / "_staging"
+            staging.mkdir(parents=True, exist_ok=True)
+            urls_file = staging / "urls.txt"
+            urls_file.write_text("\n".join(url_lines) + "\n", encoding="utf-8")
+            for i, f in enumerate(srt_files):
+                data = await f.read()
+                target = staging / f"{i:05d}_{_safe_filename(f.filename or f'cue_{i}.srt')}"
+                target.write_bytes(data)
+
+            try:
+                added = add_sources_from_files(paths, urls_file, staging)
+            finally:
+                shutil.rmtree(staging, ignore_errors=True)
+
+            return {"name": name, "added": added, "summary": _project_summary(proj_dir, registry)}
+        except HTTPException:
+            raise
+        except Exception as e:
+            traceback.print_exc(file=sys.stderr)
+            shutil.rmtree(proj_dir, ignore_errors=True)
+            raise HTTPException(500, f"{type(e).__name__}: {e}")
 
     @app.get("/api/projects/{name}")
     def get_project(name: str):
