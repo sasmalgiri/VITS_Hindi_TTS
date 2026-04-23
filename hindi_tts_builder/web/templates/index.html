@@ -72,6 +72,13 @@
   .muted { color: var(--muted); font-size: 12px; }
   details { margin-top: 12px; }
   details summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+  .pair-row { display: grid; grid-template-columns: 22px 1fr 1fr 28px; gap: 8px; align-items: center; margin-top: 6px; }
+  .pair-row .idx { color: var(--muted); font-family: var(--mono); font-size: 11px; text-align: right; }
+  .pair-row input[type=text] { font-family: var(--mono); font-size: 12px; }
+  .pair-row input[type=file] { font-size: 12px; }
+  .pair-row .rm { background: transparent; color: var(--muted); border: 1px solid var(--border); border-radius: 4px; cursor: pointer; width: 24px; height: 24px; line-height: 1; font-size: 14px; padding: 0; }
+  .pair-row .rm:hover { color: var(--danger); border-color: var(--danger); }
+  .pair-row .file-ok { color: var(--ok); font-size: 11px; }
 </style>
 </head>
 <body>
@@ -84,17 +91,17 @@
   <!-- Left column: create / select project -->
   <section class="card">
     <h2>1. Create a project</h2>
-    <p class="muted">Paste your YouTube URLs (one per line) and upload one matching <code>.srt</code> per URL — in the same order as the URLs.</p>
+    <p class="muted">Each row below pairs <strong>one YouTube URL</strong> with <strong>one SRT file</strong>. Add a new row for every extra video. Order within a row is what matters — the server stores the pairing you build here, so filename alphabetical quirks can't misalign things.</p>
 
     <label for="name">Project name</label>
     <input id="name" type="text" placeholder="my_voice" />
 
-    <label for="urls">YouTube URLs (one per line)</label>
-    <textarea id="urls" placeholder="https://www.youtube.com/watch?v=...&#10;https://youtu.be/..."></textarea>
-
-    <label for="srt">SRT files (multi-select, same order as URLs)</label>
-    <input id="srt" type="file" accept=".srt" multiple />
-    <div class="muted" id="srt_count">0 SRT files selected</div>
+    <label style="margin-top:16px;">URL ↔ SRT pairs</label>
+    <div id="pairs"></div>
+    <div class="row" style="margin-top: 6px;">
+      <button class="btn secondary" id="add_pair_btn" type="button">+ Add another pair</button>
+      <span class="muted" id="pair_count">0 pairs</span>
+    </div>
 
     <div class="row" style="margin-top: 16px;">
       <button class="btn" id="create_btn">Create project</button>
@@ -248,29 +255,69 @@ function startLogStream(name) {
   es.onerror = () => { /* swallow; SSE auto-reconnects */ };
 }
 
-$('srt').onchange = () => {
-  const n = $('srt').files.length;
-  $('srt_count').textContent = n + ' SRT files selected';
-};
+// -------------------- URL ↔ SRT pair rows -------------------------
+function renumberPairs() {
+  const rows = [...$('pairs').querySelectorAll('.pair-row')];
+  rows.forEach((r, i) => {
+    r.querySelector('.idx').textContent = (i + 1) + '.';
+    const rm = r.querySelector('.rm');
+    rm.disabled = rows.length === 1;       // always keep at least one row
+  });
+  const withFile = rows.filter(r => r.querySelector('input[type=file]').files.length > 0);
+  $('pair_count').textContent = `${withFile.length}/${rows.length} pair${rows.length === 1 ? '' : 's'} with file`;
+}
+
+function addPairRow(url = '', autofocus = false) {
+  const row = document.createElement('div');
+  row.className = 'pair-row';
+  row.innerHTML = `
+    <div class="idx"></div>
+    <input type="text" class="pair-url" placeholder="https://youtu.be/..." value="${escapeHtml(url)}" />
+    <input type="file" class="pair-srt" accept=".srt" />
+    <button class="rm" type="button" title="Remove this pair">✕</button>`;
+  $('pairs').appendChild(row);
+  row.querySelector('.rm').onclick = () => {
+    if ($('pairs').querySelectorAll('.pair-row').length > 1) {
+      row.remove();
+      renumberPairs();
+    }
+  };
+  row.querySelector('input[type=file]').onchange = renumberPairs;
+  if (autofocus) row.querySelector('input[type=text]').focus();
+  renumberPairs();
+}
+
+$('add_pair_btn').onclick = () => addPairRow('', true);
+// start with one empty row
+addPairRow();
 
 $('create_btn').onclick = async () => {
   const name = $('name').value.trim();
-  const urls = $('urls').value.trim();
-  const files = $('srt').files;
-  if (!name || !urls || !files.length) {
-    showError($('create_msg'), 'Project name, URLs, and SRT files are all required.');
-    return;
+  const rows = [...$('pairs').querySelectorAll('.pair-row')];
+  const pairs = rows.map(r => ({
+    url: r.querySelector('input[type=text]').value.trim(),
+    file: r.querySelector('input[type=file]').files[0] || null,
+  }));
+  const nonEmpty = pairs.filter(p => p.url || p.file);
+  if (!name) return showError($('create_msg'), 'Project name is required.');
+  if (!nonEmpty.length) return showError($('create_msg'), 'Add at least one URL + SRT pair.');
+  const incomplete = nonEmpty.findIndex(p => !p.url || !p.file);
+  if (incomplete !== -1) {
+    return showError($('create_msg'),
+      `Pair ${incomplete + 1} is missing ${!nonEmpty[incomplete].url ? 'a URL' : 'an SRT file'}.`);
   }
   const fd = new FormData();
   fd.append('name', name);
-  fd.append('urls', urls);
-  for (const f of files) fd.append('srt_files', f);
+  fd.append('urls', nonEmpty.map(p => p.url).join('\n'));
+  for (const p of nonEmpty) fd.append('srt_files', p.file);
   $('create_btn').disabled = true;
   $('create_status').textContent = 'creating…';
   try {
     const data = await api('/api/projects', { method: 'POST', body: fd });
     showOk($('create_msg'), `Project "${data.name}" created with ${data.added} sources.`);
-    $('name').value = ''; $('urls').value = ''; $('srt').value = ''; $('srt_count').textContent = '0 SRT files selected';
+    $('name').value = '';
+    $('pairs').innerHTML = '';
+    addPairRow();
     await refreshProjects();
     selectProject(data.name);
   } catch (e) {
