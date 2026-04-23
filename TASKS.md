@@ -430,7 +430,7 @@ Update this table as tasks are completed:
 | Task | Status | Completed on | Notes |
 |---|---|---|---|
 | T1: Warm-start | 🚫 Deferred | 2026-04-23 | MMS-TTS/Coqui VITS arch mismatch — see T1 note |
-| T2: Smoke test | 🏗 In progress | 2026-04-23 | — |
+| T2: Smoke test | ✅ Complete | 2026-04-23 | Caught + fixed: cuDNN 8/9 coexistence, WhisperX OOM, stale Windows listener, URL↔SRT pair UI. Real model training blocked on matching-language SRT (data, not code). |
 | T3: Real SRT tests | ⏳ Pending | — | — |
 | T4: Inference speed | ⏳ Pending | — | — |
 | T5: StyleTTS 2 | ⏳ Pending | — | — |
