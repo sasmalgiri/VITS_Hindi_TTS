@@ -29,6 +29,10 @@ unicodedata2
 
 # Model training
 coqui-tts>=0.22.0
+# coqui-tts 0.27.x imports isin_mps_friendly from transformers.pytorch_utils,
+# which was removed in transformers 5.x. Pin to the 4.57.x line that
+# satisfies coqui's own >=4.57 requirement and still has the symbol.
+transformers>=4.57,<5
 
 # Neural metrics
 torchmetrics
