@@ -1,0 +1,243 @@
+"""Training-launcher FastAPI app.
+
+Single-page UI plus a JSON+SSE API:
+
+    GET  /                               HTML page
+    GET  /api/projects                   list known projects
+    POST /api/projects                   create project + add sources (multipart)
+    GET  /api/projects/{name}            project summary (config + manifest counts)
+    POST /api/projects/{name}/start      kick off prepare + train
+    POST /api/projects/{name}/stop       terminate the running job
+    GET  /api/projects/{name}/status     job state
+    GET  /api/projects/{name}/logs       SSE stream of the run log
+"""
+from pathlib import Path
+from typing import List, Optional
+import asyncio
+import json
+
+from hindi_tts_builder.web.jobs import JobRegistry
+
+
+def create_app(projects_root: Path):
+    try:
+        from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request
+        from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+    except ImportError as e:
+        raise ImportError(
+            "fastapi required for the studio UI. Install: pip install fastapi uvicorn python-multipart"
+        ) from e
+
+    projects_root = Path(projects_root).resolve()
+    projects_root.mkdir(parents=True, exist_ok=True)
+    registry = JobRegistry()
+
+    app = FastAPI(
+        title="Hindi TTS Builder — Training Studio",
+        version="1.0.0",
+        description="Paste YouTube URLs, upload SRT transcripts, and start training.",
+    )
+
+    template_path = Path(__file__).parent / "templates" / "index.html"
+
+    # =========================================================================
+    # HTML
+    # =========================================================================
+    @app.get("/", response_class=HTMLResponse)
+    def index():
+        return template_path.read_text(encoding="utf-8")
+
+    # =========================================================================
+    # Projects: list + create
+    # =========================================================================
+    @app.get("/api/projects")
+    def list_projects():
+        items = []
+        for p in sorted(projects_root.iterdir()) if projects_root.exists() else []:
+            if not p.is_dir():
+                continue
+            cfg_file = p / "config.yaml"
+            if not cfg_file.exists():
+                continue
+            items.append(_project_summary(p, registry))
+        return {"projects": items}
+
+    @app.post("/api/projects")
+    async def create_project(
+        name: str = Form(...),
+        urls: str = Form(...),
+        srt_files: List[UploadFile] = File(...),
+    ):
+        from hindi_tts_builder.utils.project import create_project as create_proj
+        from hindi_tts_builder.data.pipeline import add_sources_from_files
+
+        name = name.strip()
+        if not name or not _is_safe_name(name):
+            raise HTTPException(400, "name must be alphanumeric/underscore/hyphen, non-empty")
+        url_lines = [u.strip() for u in urls.splitlines() if u.strip() and not u.strip().startswith("#")]
+        if not url_lines:
+            raise HTTPException(400, "at least one YouTube URL is required")
+        if len(url_lines) != len(srt_files):
+            raise HTTPException(
+                400,
+                f"URL/SRT count mismatch: {len(url_lines)} URLs vs {len(srt_files)} SRT uploads. "
+                "Upload one .srt per URL, in the same order.",
+            )
+        for f in srt_files:
+            if not (f.filename or "").lower().endswith(".srt"):
+                raise HTTPException(400, f"file '{f.filename}' is not a .srt")
+
+        proj_dir = projects_root / name
+        if proj_dir.exists():
+            raise HTTPException(409, f"project '{name}' already exists")
+        paths = create_proj(projects_root, name)
+
+        # Persist URLs + SRTs to a temporary "sources" staging area so we can
+        # reuse the existing add_sources_from_files() helper.
+        staging = paths.root / "_staging"
+        staging.mkdir(parents=True, exist_ok=True)
+        urls_file = staging / "urls.txt"
+        urls_file.write_text("\n".join(url_lines) + "\n", encoding="utf-8")
+        # SRTs: name them by zero-padded index so sorted() order matches URL order.
+        for i, f in enumerate(srt_files):
+            data = await f.read()
+            target = staging / f"{i:05d}_{_safe_filename(f.filename or f'cue_{i}.srt')}"
+            target.write_bytes(data)
+
+        try:
+            added = add_sources_from_files(paths, urls_file, staging)
+        except Exception as e:
+            raise HTTPException(400, f"failed to register sources: {e}")
+        finally:
+            import shutil
+            shutil.rmtree(staging, ignore_errors=True)
+
+        return {"name": name, "added": added, "summary": _project_summary(proj_dir, registry)}
+
+    @app.get("/api/projects/{name}")
+    def get_project(name: str):
+        p = projects_root / name
+        if not (p / "config.yaml").exists():
+            raise HTTPException(404, f"no project '{name}'")
+        return _project_summary(p, registry)
+
+    # =========================================================================
+    # Pipeline control
+    # =========================================================================
+    @app.post("/api/projects/{name}/start")
+    def start_pipeline(name: str, payload: Optional[dict] = None):
+        p = projects_root / name
+        if not (p / "config.yaml").exists():
+            raise HTTPException(404, f"no project '{name}'")
+        opts = payload or {}
+        try:
+            state = registry.start_pipeline(
+                name,
+                projects_root,
+                skip_train=bool(opts.get("skip_train", False)),
+                no_whisperx=bool(opts.get("no_whisperx", False)),
+                no_whisper_qc=bool(opts.get("no_whisper_qc", False)),
+            )
+        except RuntimeError as e:
+            raise HTTPException(409, str(e))
+        return state.to_dict()
+
+    @app.post("/api/projects/{name}/stop")
+    def stop_pipeline(name: str):
+        ok = registry.stop(name)
+        return {"signalled": ok}
+
+    @app.get("/api/projects/{name}/status")
+    def status(name: str):
+        st = registry.get(name)
+        if st is None:
+            return {"running": False, "state": None}
+        return {"running": st.running, "state": st.to_dict()}
+
+    @app.get("/api/projects/{name}/logs")
+    async def stream_logs(name: str, request: Request):
+        st = registry.get(name)
+        log_path = st.log_path if st else (projects_root / name / "logs" / "studio_run.log")
+        if not log_path.exists():
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            log_path.touch()
+
+        async def event_gen():
+            with open(log_path, "rb") as fp:
+                while True:
+                    if await request.is_disconnected():
+                        break
+                    chunk = fp.read(4096)
+                    if chunk:
+                        for line in chunk.decode("utf-8", errors="replace").splitlines():
+                            yield f"data: {json.dumps(line)}\n\n"
+                    else:
+                        cur = registry.get(name)
+                        if cur and not cur.running:
+                            tail = fp.read()
+                            if tail:
+                                for line in tail.decode("utf-8", errors="replace").splitlines():
+                                    yield f"data: {json.dumps(line)}\n\n"
+                            yield f"event: done\ndata: {json.dumps(cur.to_dict())}\n\n"
+                            break
+                        await asyncio.sleep(0.5)
+
+        return StreamingResponse(event_gen(), media_type="text/event-stream")
+
+    return app
+
+
+def _is_safe_name(name: str) -> bool:
+    return all(c.isalnum() or c in "-_" for c in name)
+
+
+def _safe_filename(name: str) -> str:
+    return "".join(c if (c.isalnum() or c in "._-") else "_" for c in name)
+
+
+def _project_summary(p: Path, registry: JobRegistry) -> dict:
+    import yaml
+    cfg = {}
+    try:
+        cfg = yaml.safe_load((p / "config.yaml").read_text(encoding="utf-8")) or {}
+    except Exception:
+        pass
+
+    manifest_file = p / "sources" / "manifest.json"
+    sources_count = 0
+    counts = {"downloaded": 0, "aligned": 0, "segmented": 0, "qc_passed": 0}
+    if manifest_file.exists():
+        try:
+            data = json.loads(manifest_file.read_text(encoding="utf-8"))
+            srcs = data.get("sources", [])
+            sources_count = len(srcs)
+            for s in srcs:
+                st = s.get("status", {})
+                if st.get("downloaded"): counts["downloaded"] += 1
+                if st.get("aligned"): counts["aligned"] += 1
+                if st.get("segmented"): counts["segmented"] += 1
+                if st.get("qc_passed"): counts["qc_passed"] += 1
+        except Exception:
+            pass
+
+    job = registry.get(p.name)
+    return {
+        "name": p.name,
+        "language": cfg.get("language"),
+        "sample_rate": cfg.get("target_sample_rate"),
+        "sources_count": sources_count,
+        "stage_counts": counts,
+        "engine_exported": (p / "engine" / "manifest.json").exists(),
+        "job": job.to_dict() if job else None,
+    }
+
+
+def run_studio(projects_root, host: str = "127.0.0.1", port: int = 8770) -> None:
+    try:
+        import uvicorn  # type: ignore
+    except ImportError as e:
+        raise ImportError(
+            "uvicorn required to run the studio. Install: pip install uvicorn[standard]"
+        ) from e
+    app = create_app(Path(projects_root))
+    uvicorn.run(app, host=host, port=port)

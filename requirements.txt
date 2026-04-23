@@ -33,10 +33,11 @@ coqui-tts>=0.22.0
 # Neural metrics
 torchmetrics
 
-# Inference API
+# Inference API + training studio UI
 fastapi
 uvicorn
 pydantic
+python-multipart
 
 # Dev / testing
 pytest

@@ -9,6 +9,7 @@ Sub-commands:
     speak           Generate audio from text using an engine
     render-srt      Render an SRT file to a timed WAV using an engine
     serve           Start a FastAPI HTTP server
+    studio          Start the browser-based training launcher (URLs + SRT → train)
     doctor          Diagnose environment (GPU, dependencies, etc.)
 
 Every sub-command is discoverable via `hindi-tts-builder <cmd> --help`.
@@ -269,6 +270,25 @@ def serve(name: str, host: str, port: int):
         sys.exit(1)
     _echo_ok(f"Serving {name} at http://{host}:{port} (OpenAPI: /docs)")
     run_server(engine_dir, host=host, port=port)
+
+
+# =========================================================================
+# studio (training launcher web UI)
+# =========================================================================
+@cli.command()
+@click.option("--host", default="127.0.0.1", show_default=True)
+@click.option("--port", type=int, default=8770, show_default=True)
+@click.option("--projects-root", type=click.Path(file_okay=False, path_type=Path),
+              default=None,
+              help="Directory holding project subdirs. Defaults to ./projects relative to CWD.")
+def studio(host: str, port: int, projects_root: Path | None):
+    """Launch the browser-based training studio (paste URLs + SRTs, click train)."""
+    from hindi_tts_builder.web.app import run_studio
+    root = projects_root or _projects_root()
+    root.mkdir(parents=True, exist_ok=True)
+    _echo_ok(f"Studio at http://{host}:{port}  (projects: {root})")
+    _echo_info("Open the URL in your browser. Ctrl+C to stop.")
+    run_studio(root, host=host, port=port)
 
 
 # =========================================================================

@@ -15,3 +15,6 @@ hindi-tts-builder = "hindi_tts_builder.cli.main:cli"
 
 [tool.setuptools.packages.find]
 include = ["hindi_tts_builder*"]
+
+[tool.setuptools.package-data]
+"hindi_tts_builder.web" = ["templates/*.html", "static/*"]
