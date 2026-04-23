@@ -10,9 +10,23 @@ as-is. Quality suffers slightly but the pipeline still produces a working
 model.
 
 Output: one refined SRT per source at `aligned/<source_id>.srt`.
+
+Tuning for VRAM-constrained GPUs (12 GB or less sharing with a Windows
+desktop): three env vars override the WhisperX defaults without touching
+code. These are read at alignment time, not import time.
+
+    HTTS_WHISPERX_MODEL    — whisper model size (default: medium)
+                             options: tiny, base, small, medium, large-v2, large-v3
+    HTTS_WHISPERX_BATCH    — transcription batch size (default: 4)
+    HTTS_WHISPERX_COMPUTE  — compute dtype on CUDA (default: int8_float16)
+                             options: float32, float16, int8_float16, int8
+
+On OOM the loader automatically steps down to smaller models before
+falling back to the SRT-as-is path.
 """
 from __future__ import annotations
 from pathlib import Path
+import os
 
 from hindi_tts_builder.data.manifest import Manifest, Source
 from hindi_tts_builder.utils import get_logger
@@ -34,24 +48,80 @@ def _transcribe_and_align(
     audio_path: Path,
     language: str = "hi",
     device: str | None = None,
+    logger=None,
 ):
     """Run WhisperX transcription + alignment. Returns a list of word dicts:
         [{"word": "...", "start": float, "end": float}, ...]
     or None if WhisperX is unavailable.
+
+    Honors HTTS_WHISPERX_{MODEL,BATCH,COMPUTE} env vars; on CUDA OOM it
+    steps down to a smaller model rather than crashing the pipeline.
     """
     bundle = _try_load_whisperx()
     if bundle is None:
         return None
     whisperx, torch = bundle
+    log = logger
 
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
-    compute_type = "float16" if device == "cuda" else "int8"
+    default_compute = "int8_float16" if device == "cuda" else "int8"
+    compute_type = os.environ.get("HTTS_WHISPERX_COMPUTE", default_compute)
+    batch_size = int(os.environ.get("HTTS_WHISPERX_BATCH", "4"))
+    requested = os.environ.get("HTTS_WHISPERX_MODEL", "medium")
 
-    # Transcribe
-    model = whisperx.load_model("large-v3", device=device, compute_type=compute_type, language=language)
+    # Fallback chain: if the requested model OOMs, try progressively smaller
+    # ones before falling back to the SRT-as-is path.
+    fallback_order = ["tiny", "base", "small", "medium", "large-v2", "large-v3"]
+    try:
+        start = fallback_order.index(requested)
+    except ValueError:
+        start = fallback_order.index("medium")
+    candidates = list(reversed(fallback_order[: start + 1]))
+
     audio = whisperx.load_audio(str(audio_path))
-    result = model.transcribe(audio, batch_size=16)
+
+    model = None
+    used = None
+    last_err = None
+    for name in candidates:
+        try:
+            if log:
+                log.info(f"[whisperx] loading {name} (batch={batch_size} compute={compute_type})")
+            model = whisperx.load_model(name, device=device, compute_type=compute_type, language=language)
+            used = name
+            break
+        except Exception as e:
+            last_err = e
+            msg = str(e).lower()
+            if "out of memory" in msg or "cuda" in msg:
+                if log:
+                    log.warning(f"[whisperx] {name} OOM or CUDA error; trying smaller model")
+                try:
+                    torch.cuda.empty_cache()
+                except Exception:
+                    pass
+                continue
+            raise
+    if model is None:
+        if log:
+            log.error(f"[whisperx] every model in {candidates} failed to load: {last_err}")
+        return None
+
+    try:
+        result = model.transcribe(audio, batch_size=batch_size)
+    except Exception as e:
+        if log:
+            log.error(f"[whisperx] transcribe failed with {used}: {e}")
+        return None
+    finally:
+        # Free transcription model before loading the alignment model — they
+        # both sit in VRAM otherwise.
+        del model
+        try:
+            torch.cuda.empty_cache()
+        except Exception:
+            pass
 
     # Align
     align_model, metadata = whisperx.load_align_model(language_code=language, device=device)
@@ -136,10 +206,11 @@ def align_transcripts(
             if whisperx_available:
                 audio_path = paths.root / src.audio_path
                 log.info(f"[whisperx] {src.id} ({len(cues)} cues)")
-                words = _transcribe_and_align(audio_path, language=language)
+                words = _transcribe_and_align(audio_path, language=language, logger=log)
                 if words:
                     cues = _snap_cues_to_words(cues, words)
                 else:
+                    log.warning(f"[whisperx] {src.id}: fell back to SRT timestamps")
                     summary["fallback_used"] += 1
             else:
                 summary["fallback_used"] += 1

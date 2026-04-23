@@ -30,9 +30,14 @@ start "" cmd /c "timeout /t 6 /nobreak >nul && start http://localhost:8770"
 REM Run the studio inside WSL. Steps:
 REM   1. free port 8770 in WSL if a stale process is still bound to it
 REM   2. git pull --ff-only to keep the WSL clone in sync with GitHub
-REM   3. ensure deps the studio needs are present (idempotent, fast)
-REM   4. exec the studio bound to 0.0.0.0 so Windows localhost reaches it
-wsl -d Ubuntu-22.04 -u root -- bash -lc "fuser -k -TERM 8770/tcp 2>/dev/null; sleep 1; cd /root/hindi-tts && git pull --ff-only --quiet origin master 2>/dev/null; source venv/bin/activate && pip install --quiet python-multipart 'transformers>=4.57,<5' >/dev/null 2>&1; exec hindi-tts-builder studio --host 0.0.0.0 --port 8770"
+REM   3. ensure deps the studio needs are present (idempotent, fast):
+REM        - python-multipart (FastAPI file uploads)
+REM        - transformers pin (coqui-tts compat)
+REM        - cuDNN 8 staged to /opt/cudnn8 so ctranslate2 (faster-whisper)
+REM          can find it while torch keeps its bundled cuDNN 9
+REM   4. export LD_LIBRARY_PATH so both cuDNN 8 and 9 are visible
+REM   5. exec the studio bound to 0.0.0.0 so Windows localhost reaches it
+wsl -d Ubuntu-22.04 -u root -- bash -lc "fuser -k -TERM 8770/tcp 2>/dev/null; sleep 1; cd /root/hindi-tts && git pull --ff-only --quiet origin master 2>/dev/null; source venv/bin/activate && pip install --quiet python-multipart 'transformers>=4.57,<5' >/dev/null 2>&1; mkdir -p /opt/cudnn8 && [ -f /opt/cudnn8/nvidia/cudnn/lib/libcudnn_ops_infer.so.8 ] || pip install --quiet --target /opt/cudnn8 nvidia-cudnn-cu12==8.9.7.29 >/dev/null 2>&1; export LD_LIBRARY_PATH=/opt/cudnn8/nvidia/cudnn/lib:/root/hindi-tts/venv/lib/python3.10/site-packages/nvidia/cudnn/lib\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}; exec hindi-tts-builder studio --host 0.0.0.0 --port 8770"
 
 echo.
 echo  Studio stopped.

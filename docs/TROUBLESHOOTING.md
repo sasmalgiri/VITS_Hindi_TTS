@@ -20,6 +20,76 @@ pip uninstall -y torch torchaudio
 pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu121
 ```
 
+### `Could not load library libcudnn_ops_infer.so.8` during `prepare` (WhisperX)
+
+**Symptom:** `hindi-tts-builder prepare` aborts in Stage 2 (align) with
+a core dump and the message:
+
+```
+Could not load library libcudnn_ops_infer.so.8. Error:
+libcudnn_ops_infer.so.8: cannot open shared object file: No such file or directory
+```
+
+**Cause:** WhisperX uses `faster-whisper`, which uses `ctranslate2`, which
+dynamically links against **cuDNN 8**. Meanwhile torch 2.5.1+cu121 bundles
+**cuDNN 9** — so the venv has v9 but ctranslate2 can't find v8.
+
+**Fix — keep both side-by-side:**
+
+```bash
+# Stage cuDNN 8 in a separate directory so it doesn't clobber torch's v9
+mkdir -p /opt/cudnn8
+pip install --target /opt/cudnn8 nvidia-cudnn-cu12==8.9.7.29
+
+# Prepend both dirs to LD_LIBRARY_PATH
+export LD_LIBRARY_PATH=/opt/cudnn8/nvidia/cudnn/lib:/root/hindi-tts/venv/lib/python3.10/site-packages/nvidia/cudnn/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+```
+
+Append the `export` line to `~/.bashrc` (or your distro's shell-init file)
+so every new shell gets it. `Start Studio.bat` handles this automatically.
+
+**Why not just `pip install nvidia-cudnn-cu12==8.9.7.29`?**
+That overwrites torch's v9 and breaks torch with
+`ImportError: libcudnn.so.9: cannot open shared object file`. They must
+coexist, not replace.
+
+### `CUDA failed with error out of memory` during Stage 2 (align)
+
+**Symptom:** WhisperX loads, starts transcribing, then aborts with:
+
+```
+2026-xx-xx ... [ERROR] data.pipeline: [fail] src_... : CUDA failed with error out of memory
+```
+
+**Cause:** the default Whisper model used for timestamp alignment
+(`large-v3` at float16, batch_size 16) needs ~10-11 GB VRAM. On a 12 GB
+card sharing VRAM with a Windows desktop (~4 GB reserved by the
+compositor + browser GPU accel), only ~7-8 GB is actually free.
+
+**Fix:** `align.py` reads three env vars at alignment time. Defaults are
+already tuned for 12 GB-with-desktop (`medium`, batch 4, `int8_float16`).
+If you still OOM, step further down:
+
+```bash
+export HTTS_WHISPERX_MODEL=small     # or base, tiny
+export HTTS_WHISPERX_BATCH=2
+export HTTS_WHISPERX_COMPUTE=int8    # pure int8, smallest memory
+```
+
+On OOM the loader automatically falls back to smaller models before
+giving up. If every model fails, the pipeline falls back to using the
+SRT timestamps as-is (equivalent to `--no-whisperx`). You'll see one of:
+
+```
+[whisperx] medium OOM or CUDA error; trying smaller model
+[whisperx] src_...: fell back to SRT timestamps
+```
+
+**Free up VRAM without reducing model size:** close the browser, disable
+hardware acceleration in Chrome/Edge, or set `HTTS_WHISPERX_MODEL=base`
+temporarily during alignment. VRAM is only needed for the ~1-2 min of
+per-source alignment; you can turn it back on once `prepare` completes.
+
 ### `ffmpeg: command not found`
 
 ```bash
