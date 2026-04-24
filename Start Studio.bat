@@ -14,21 +14,34 @@ echo  The browser will open automatically in a few seconds.
 echo  Close this window (or Ctrl+C) to stop the server.
 echo.
 
-REM Kill any Windows-side process still listening on 8770. A stale Windows
-REM listener shadows the WSL studio because localhost resolves to Windows
-REM first - the WSL process is fine but unreachable from the browser.
-REM Finds all PIDs in LISTENING state on 8770 and force-kills them.
-echo  Clearing any stale Windows process on port 8770...
+REM First, probe whether the studio is already serving on localhost:8770.
+REM If yes, this bat run should be a no-op intervention - just open the
+REM browser and exit. We must NOT kill the WSL distro or stale-Windows
+REM processes, because doing so would also kill any in-progress training
+REM pipeline running inside the existing studio.
+echo  Checking if studio is already up...
+curl --silent --max-time 2 --output NUL --fail http://127.0.0.1:8770/ >nul 2>&1
+if %ERRORLEVEL% EQU 0 (
+    echo  Studio already responding on http://localhost:8770 - opening browser only.
+    start "" http://localhost:8770
+    echo.
+    echo  Leaving this window open is optional; the studio is running independently.
+    pause
+    exit /b 0
+)
+
+REM Studio is not responding. Clean up any stale Windows-side listener on
+REM 8770 (a dead python process left from a crashed prior studio run can
+REM hold the port and block new bind attempts).
+echo  Studio not responding. Clearing any stale Windows process on port 8770...
 for /f "tokens=5" %%p in ('netstat -ano ^| findstr /R /C:":8770 .*LISTENING"') do (
     echo    killing Windows PID %%p
     taskkill /F /PID %%p >nul 2>&1
 )
 
-REM Bounce WSL to reset the localhost-to-WSL port-forwarding registration.
-REM Without this, after a previous studio session the Windows->WSL bridge for
-REM 8770 sometimes stays half-broken and the browser sees ERR_CONNECTION_REFUSED
-REM even though the studio is running fine inside WSL. Cheap (~3 s) and
-REM idempotent.
+REM If WSL has stuck localhost port forwarding from a previous session, only
+REM bouncing WSL fixes it. Safe here because we already confirmed nothing
+REM is responding on 8770 - so no live training to disturb.
 echo  Bouncing WSL to refresh localhost forwarding...
 wsl --shutdown
 ping -n 4 127.0.0.1 >nul
