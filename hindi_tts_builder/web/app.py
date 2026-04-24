@@ -32,6 +32,13 @@ def create_app(projects_root: Path):
     projects_root.mkdir(parents=True, exist_ok=True)
     registry = JobRegistry()
 
+    # If the studio was just restarted while a pipeline is mid-flight, the
+    # in-memory registry is empty — but the prepare/train subprocess is
+    # still running orphaned. Re-attach so the UI shows the right state.
+    n = registry.reattach_orphans(projects_root)
+    if n:
+        print(f"[studio] re-attached {n} orphan job(s) from previous studio session", flush=True)
+
     app = FastAPI(
         title="Hindi TTS Builder — Training Studio",
         version="1.0.0",

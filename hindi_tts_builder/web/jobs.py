@@ -69,6 +69,78 @@ class JobRegistry:
         st = self.get(project)
         return st is not None and st.running
 
+    def reattach_orphans(self, projects_root: Path) -> int:
+        """Scan for `hindi-tts-builder (prepare|train) <project>` processes
+        whose parent studio is gone (we just started, registry is empty)
+        and re-register them. Lets a studio restart pick up an in-flight
+        pipeline without showing it as "idle" in the UI.
+
+        Linux/WSL only — uses /proc. Returns the count of re-attached jobs.
+        """
+        proc_root = Path("/proc")
+        if not proc_root.exists():
+            return 0
+        attached = 0
+        for entry in proc_root.iterdir():
+            if not entry.name.isdigit():
+                continue
+            cmd_file = entry / "cmdline"
+            try:
+                cmdline = cmd_file.read_bytes().split(b"\x00")
+            except (FileNotFoundError, PermissionError, ProcessLookupError):
+                continue
+            cmd_str = " ".join(c.decode("utf-8", errors="replace") for c in cmdline if c)
+            if "hindi_tts_builder.cli.main" not in cmd_str:
+                continue
+            stage = None
+            project = None
+            parts = [c.decode("utf-8", errors="replace") for c in cmdline if c]
+            for i, p in enumerate(parts):
+                if p in ("prepare", "train") and i + 1 < len(parts):
+                    stage = p
+                    project = parts[i + 1]
+                    break
+            if not project:
+                continue
+            with self._lock:
+                if project in self._jobs and self._jobs[project].running:
+                    continue
+                pid = int(entry.name)
+                log_path = projects_root / project / "logs" / "studio_run.log"
+                try:
+                    started_at = entry.stat().st_mtime
+                except OSError:
+                    import time as _t
+                    started_at = _t.time()
+                state = JobState(
+                    project=project,
+                    stage=stage or "unknown",
+                    pid=pid,
+                    started_at=started_at,
+                    log_path=log_path,
+                )
+                self._jobs[project] = state
+                attached += 1
+                # Spawn a thin watcher: poll /proc/<pid> until it disappears,
+                # then mark finished. We don't have the original Popen object
+                # so we can't know returncode for sure; use 0 if /proc is gone.
+                threading.Thread(
+                    target=self._watch_orphan, args=(project, pid),
+                    daemon=True,
+                ).start()
+        return attached
+
+    def _watch_orphan(self, project: str, pid: int) -> None:
+        import time as _t
+        proc_dir = Path(f"/proc/{pid}")
+        while proc_dir.exists():
+            _t.sleep(2)
+        with self._lock:
+            st = self._jobs.get(project)
+            if st is not None and st.running:
+                st.returncode = 0  # we lost the real exit code
+                st.finished_at = _t.time()
+
     def start_pipeline(
         self,
         project: str,
