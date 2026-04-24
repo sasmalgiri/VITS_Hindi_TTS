@@ -74,8 +74,12 @@ def _passthrough_qc(paths: ProjectPaths, manifest: Manifest, log) -> dict:
     """Mark every segmented clip as passed without scoring it. Use when you
     fully trust your SRT-audio match and don't want noisy/strict thresholds
     to silently throw away training data.
+
+    Fills duration from each wav so downstream build_training_set, which
+    parses duration as float, can still read the CSV.
     """
     import csv
+    import soundfile as sf  # type: ignore
     paths.training_set.mkdir(parents=True, exist_ok=True)
     report = paths.training_set / "qc_report.csv"
     summary = {"total": 0, "passed": 0, "failed_snr": 0, "failed_silence": 0,
@@ -92,9 +96,16 @@ def _passthrough_qc(paths: ProjectPaths, manifest: Manifest, log) -> dict:
                 continue
             for clip_wav in sorted(clip_dir.glob(f"{src.id}_c*.wav")):
                 clip_id = clip_wav.stem
+                # soundfile.info reads only the WAV header — no audio decode.
+                try:
+                    info = sf.info(str(clip_wav))
+                    duration = info.frames / float(info.samplerate)
+                except Exception as e:
+                    log.warning(f"[qc-skip] cannot stat {clip_id}: {e}; using 0.0")
+                    duration = 0.0
                 summary["total"] += 1
                 summary["passed"] += 1
-                w.writerow([clip_id, src.id, "", "", "", "", 1, "qc_skipped"])
+                w.writerow([clip_id, src.id, f"{duration:.3f}", "0.00", "0.000", "", 1, "qc_skipped"])
             src.status.qc_passed = True
             manifest.save()
     log.info(f"qc skipped: marked {summary['passed']}/{summary['total']} clips as passed")
