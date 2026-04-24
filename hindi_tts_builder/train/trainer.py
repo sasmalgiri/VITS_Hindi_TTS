@@ -41,11 +41,12 @@ def _try_import_coqui():
     """Return the Coqui modules we need, or None if unavailable."""
     try:
         from TTS.tts.configs.vits_config import VitsConfig  # type: ignore
-        from TTS.tts.models.vits import Vits  # type: ignore
+        from TTS.tts.models.vits import Vits, VitsAudioConfig  # type: ignore
         from TTS.utils.audio import AudioProcessor  # type: ignore
         from trainer import Trainer as CoquiTrainer, TrainerArgs  # type: ignore
         return {
             "VitsConfig": VitsConfig,
+            "VitsAudioConfig": VitsAudioConfig,
             "Vits": Vits,
             "AudioProcessor": AudioProcessor,
             "CoquiTrainer": CoquiTrainer,
@@ -159,6 +160,7 @@ class Trainer:
 
         # Build Coqui's VitsConfig from our typed config
         VitsConfig = coqui["VitsConfig"]
+        VitsAudioConfig = coqui["VitsAudioConfig"]
 
         # Coqui's VITS expects its own dataset format; we'll point it at the
         # Hindi training CSV in a simple "ljspeech"-style layout.
@@ -170,19 +172,23 @@ class Trainer:
             "language": "hi",
         }
 
+        # Coqui >=0.27 requires a VitsAudioConfig instance (attribute access);
+        # passing a plain dict crashes init_from_config with
+        # AttributeError: 'dict' object has no attribute 'hop_length'.
+        audio_cfg = VitsAudioConfig(
+            sample_rate=mc.sample_rate,
+            hop_length=mc.hop_length,
+            win_length=mc.win_length,
+            num_mels=mc.n_mel_channels,
+            fft_size=mc.n_fft,
+            mel_fmin=mc.mel_fmin,
+            mel_fmax=mc.mel_fmax,
+        )
+
         config = VitsConfig(
             run_name=self.project_config.get("name", "hindi_tts"),
             output_path=str(self.paths.checkpoints),
-            # Audio
-            audio={
-                "sample_rate": mc.sample_rate,
-                "hop_length": mc.hop_length,
-                "win_length": mc.win_length,
-                "num_mels": mc.n_mel_channels,
-                "fft_size": mc.n_fft,
-                "mel_fmin": mc.mel_fmin,
-                "mel_fmax": mc.mel_fmax,
-            },
+            audio=audio_cfg,
             # Training
             batch_size=tc.batch_size,
             eval_batch_size=tc.val_batch_size,
