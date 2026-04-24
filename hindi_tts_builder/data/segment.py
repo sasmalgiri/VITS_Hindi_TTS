@@ -86,8 +86,11 @@ def segment_clips(
         n_created = 0
         n_rejected = 0
         n_skipped = 0
+        total_cues = len(cues)
+        progress_every = max(50, total_cues // 20)
+        log.info(f"[segment] {src.id}: starting, {total_cues} cues to cut")
 
-        for cue in cues:
+        for i, cue in enumerate(cues, 1):
             clip_id = f"{src.id}_c{cue.index:06d}"
             clip_wav = out_dir / f"{clip_id}.wav"
             clip_txt = out_dir / f"{clip_id}.txt"
@@ -127,6 +130,9 @@ def segment_clips(
             except Exception as e:
                 log.warning(f"[clip fail] {clip_id}: {e}")
                 n_rejected += 1
+
+            if i % progress_every == 0 or i == total_cues:
+                log.info(f"[segment] {src.id}: {i}/{total_cues} cues processed (created={n_created} skipped={n_skipped} rejected={n_rejected})")
 
         src.status.segmented = True
         summary["clips_created"] += n_created

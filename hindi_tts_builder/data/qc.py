@@ -19,6 +19,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import csv
+import os
+import time
 import unicodedata
 
 from hindi_tts_builder.data.manifest import Manifest
@@ -75,8 +77,12 @@ class _LazyWhisper:
             from faster_whisper import WhisperModel  # type: ignore
             import torch  # type: ignore
             device = "cuda" if torch.cuda.is_available() else "cpu"
-            compute = "float16" if device == "cuda" else "int8"
-            self.model = WhisperModel("large-v3", device=device, compute_type=compute)
+            # Defaults sized for 12 GB shared with a Windows desktop.
+            # Override via env vars when more headroom is available.
+            default_compute = "int8_float16" if device == "cuda" else "int8"
+            compute = os.environ.get("HTTS_QC_WHISPER_COMPUTE", default_compute)
+            model_name = os.environ.get("HTTS_QC_WHISPER_MODEL", "medium")
+            self.model = WhisperModel(model_name, device=device, compute_type=compute)
         except ImportError:
             self.model = None
 
@@ -118,6 +124,19 @@ def quality_filter(
         "failed_cer": 0, "failed_duration": 0,
     }
     rows: list[ClipQC] = []
+
+    # Pre-count total clips so we can log progress as N/total with an ETA.
+    total_clips = 0
+    for src in manifest:
+        if not src.status.segmented:
+            continue
+        clip_dir = paths.aligned / src.id
+        if clip_dir.exists():
+            total_clips += sum(1 for _ in clip_dir.glob(f"{src.id}_c*.wav"))
+    log.info(f"[qc] starting on {total_clips} clip(s) across {len(manifest)} source(s)")
+
+    progress_every = max(50, total_clips // 50) if total_clips else 50
+    t_started = time.time()
 
     for src in manifest:
         if not src.status.segmented:
@@ -182,6 +201,17 @@ def quality_filter(
                 passed=passed,
                 reason=reason,
             ))
+
+            # Periodic progress with rate + ETA
+            if total_clips and (summary["total"] % progress_every == 0 or summary["total"] == total_clips):
+                elapsed = time.time() - t_started
+                rate = summary["total"] / elapsed if elapsed > 0 else 0
+                remaining = (total_clips - summary["total"]) / rate if rate > 0 else 0
+                log.info(
+                    f"[qc] progress {summary['total']}/{total_clips} "
+                    f"({summary['total']/total_clips*100:.1f}%) "
+                    f"passed={summary['passed']} rate={rate:.1f}/s eta={int(remaining)}s"
+                )
 
         src.status.qc_passed = True
         manifest.save()

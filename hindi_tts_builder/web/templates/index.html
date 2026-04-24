@@ -287,6 +287,9 @@ const RE_STEP         = /(?:--?>?\s*)?STEP\s*[:=]\s*(\d+)\s*\/?\s*(\d+)?/i;
 const RE_GLOBAL_STEP  = /global[_ ]?step\s*[:=]\s*(\d+)/i;
 const RE_EPOCH        = /EPOCH\s*[:=]\s*(\d+)\s*\/?\s*(\d+)?/i;
 const RE_LOSS         = /\bloss\s*[:=]\s*([\d.]+(?:[eE][-+]?\d+)?)/i;
+// Per-stage counters (added in qc.py / segment.py)
+const RE_QC_PROG      = /\[qc\]\s+progress\s+(\d+)\/(\d+)\s+\(([\d.]+)%\).*?passed=(\d+).*?eta=(\d+)s/i;
+const RE_SEG_PROG     = /\[segment\]\s+(\S+):\s+(\d+)\/(\d+)\s+cues\s+processed.*?created=(\d+)\s+skipped=(\d+)\s+rejected=(\d+)/i;
 
 let progress = {
   stageIdx: -1,        // -1 = idle, 0..5 = current stage
@@ -294,6 +297,8 @@ let progress = {
   failed: false,
   trainStep: 0, trainTarget: null, lastLoss: null, lastEpoch: null,
   stageStartedAt: null,
+  // Per-stage live counters (within-stage progress)
+  stageCounter: null,   // {done, total, pct, eta_s, extra}
 };
 
 function renderStages() {
@@ -315,8 +320,28 @@ function renderStages() {
   } else if (progress.stageIdx >= 0) {
     const s = PIPELINE_STAGES[progress.stageIdx];
     const elapsed = progress.stageStartedAt ? Math.round((Date.now() - progress.stageStartedAt) / 1000) : 0;
-    $('stage_status').innerHTML = `<strong>Stage ${progress.stageIdx + 1} of 6:</strong> ${s.name} <span class="muted">(running ${elapsed}s)</span>`;
+    let html = `<strong>Stage ${progress.stageIdx + 1} of 6:</strong> ${s.name} <span class="muted">(running ${fmtDur(elapsed)})</span>`;
+    if (progress.stageCounter) {
+      const c = progress.stageCounter;
+      html += `<div style="margin-top:6px;">
+        <div class="train-bar"><div class="fill" style="width:${c.pct.toFixed(1)}%; background:linear-gradient(90deg,var(--accent-2),var(--accent));"></div></div>
+        <div class="muted" style="font-family:var(--mono); font-size:11px; margin-top:4px;">
+          ${c.done.toLocaleString()} / ${c.total.toLocaleString()} (${c.pct.toFixed(1)}%)
+          ${c.eta_s != null ? ' · eta ' + fmtDur(c.eta_s) : ''}
+          ${c.extra ? ' · ' + c.extra : ''}
+        </div>
+      </div>`;
+    }
+    $('stage_status').innerHTML = html;
   }
+}
+
+function fmtDur(s) {
+  if (s == null || isNaN(s)) return '?';
+  s = Math.max(0, Math.round(s));
+  if (s < 60) return s + 's';
+  if (s < 3600) return Math.floor(s/60) + 'm ' + (s%60) + 's';
+  return Math.floor(s/3600) + 'h ' + Math.floor((s%3600)/60) + 'm';
 }
 
 function renderTrainBar(maxSteps) {
@@ -354,9 +379,32 @@ function consumeLogLine(line) {
       for (let j = 0; j < i; j++) progress.done.add(PIPELINE_STAGES[j].id);
       progress.stageIdx = i;
       progress.stageStartedAt = Date.now();
+      progress.stageCounter = null;
       progress.failed = false;
       return;
     }
+  }
+
+  // Within-stage counters
+  let m = line.match(RE_QC_PROG);
+  if (m) {
+    const done = parseInt(m[1], 10), total = parseInt(m[2], 10);
+    const pct = parseFloat(m[3]), passed = parseInt(m[4], 10), eta = parseInt(m[5], 10);
+    progress.stageCounter = { done, total, pct, eta_s: eta, extra: `passed ${passed}` };
+    if (progress.stageIdx < 3) progress.stageIdx = 3;
+    return;
+  }
+  m = line.match(RE_SEG_PROG);
+  if (m) {
+    const done = parseInt(m[2], 10), total = parseInt(m[3], 10);
+    const created = parseInt(m[4], 10), rejected = parseInt(m[6], 10);
+    const pct = total ? (done / total) * 100 : 0;
+    const elapsed = (Date.now() - (progress.stageStartedAt || Date.now())) / 1000;
+    const rate = elapsed > 0 ? done / elapsed : 0;
+    const eta = rate > 0 ? (total - done) / rate : null;
+    progress.stageCounter = { done, total, pct, eta_s: eta, extra: `${m[1]} · created ${created} · rejected ${rejected}` };
+    if (progress.stageIdx < 2) progress.stageIdx = 2;
+    return;
   }
   if (RE_PIPELINE_OK.test(line)) {
     // Stages 1-5 (prepare) finished
