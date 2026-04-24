@@ -42,11 +42,13 @@ def _try_import_coqui():
     try:
         from TTS.tts.configs.vits_config import VitsConfig  # type: ignore
         from TTS.tts.models.vits import Vits, VitsAudioConfig  # type: ignore
+        from TTS.config.shared_configs import BaseDatasetConfig  # type: ignore
         from TTS.utils.audio import AudioProcessor  # type: ignore
         from trainer import Trainer as CoquiTrainer, TrainerArgs  # type: ignore
         return {
             "VitsConfig": VitsConfig,
             "VitsAudioConfig": VitsAudioConfig,
+            "BaseDatasetConfig": BaseDatasetConfig,
             "Vits": Vits,
             "AudioProcessor": AudioProcessor,
             "CoquiTrainer": CoquiTrainer,
@@ -54,6 +56,53 @@ def _try_import_coqui():
         }
     except ImportError:
         return None
+
+
+def _hindi_csv_formatter(root_path, meta_file, **kwargs):
+    """Coqui-compatible formatter for our train/val CSVs.
+
+    Our build_training_set writes pipe-delimited CSVs at
+    `<project>/training_set/{train,val,test}.csv` with header
+    `audio_path | raw_text | processed_text | duration | source_id`.
+
+    `audio_path` is recorded as a relative path from the project root
+    (one directory up from training_set/). Coqui's loader passes
+    root_path = the directory holding the CSV (training_set), so we
+    resolve audio paths against `root_path.parent`.
+    """
+    import csv as _csv
+    csv_file = Path(root_path) / meta_file
+    project_root = Path(root_path).parent
+    items = []
+    with open(csv_file, encoding="utf-8") as f:
+        reader = _csv.DictReader(f, delimiter="|")
+        for row in reader:
+            ap = (row.get("audio_path") or "").strip()
+            if not ap:
+                continue
+            audio_file = ap if Path(ap).is_absolute() else str(project_root / ap)
+            text = (row.get("processed_text") or row.get("raw_text") or "").strip()
+            if not text:
+                continue
+            items.append({
+                "text": text,
+                "audio_file": audio_file,
+                "speaker_name": "hindi",
+                "root_path": str(project_root),
+            })
+    return items
+
+
+def _register_formatter():
+    """Inject our formatter into Coqui's formatters namespace so
+    BaseDatasetConfig(formatter='hindi_csv') resolves to it.
+    """
+    try:
+        from TTS.tts.datasets import formatters as _fmt  # type: ignore
+        if not hasattr(_fmt, "hindi_csv"):
+            setattr(_fmt, "hindi_csv", _hindi_csv_formatter)
+    except ImportError:
+        pass
 
 
 class Trainer:
@@ -161,16 +210,21 @@ class Trainer:
         # Build Coqui's VitsConfig from our typed config
         VitsConfig = coqui["VitsConfig"]
         VitsAudioConfig = coqui["VitsAudioConfig"]
+        BaseDatasetConfig = coqui["BaseDatasetConfig"]
 
-        # Coqui's VITS expects its own dataset format; we'll point it at the
-        # Hindi training CSV in a simple "ljspeech"-style layout.
-        dataset_cfg = {
-            "name": "hindi_single_speaker",
-            "path": str(self.paths.training_set),
-            "meta_file_train": "train.csv",
-            "meta_file_val": "val.csv",
-            "language": "hi",
-        }
+        # Register our custom formatter so the dataset loader can find it
+        # by the string name we pass below.
+        _register_formatter()
+
+        # Coqui >=0.27 wants a BaseDatasetConfig instance (Coqpit), not a dict.
+        dataset_cfg = BaseDatasetConfig(
+            formatter="hindi_csv",
+            dataset_name="hindi_single_speaker",
+            path=str(self.paths.training_set),
+            meta_file_train="train.csv",
+            meta_file_val="val.csv",
+            language="hi",
+        )
 
         # Coqui >=0.27 requires a VitsAudioConfig instance (attribute access);
         # passing a plain dict crashes init_from_config with
