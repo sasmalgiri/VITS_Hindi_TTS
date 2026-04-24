@@ -24,6 +24,16 @@ for /f "tokens=5" %%p in ('netstat -ano ^| findstr /R /C:":8770 .*LISTENING"') d
     taskkill /F /PID %%p >nul 2>&1
 )
 
+REM Bounce WSL to reset the localhost-to-WSL port-forwarding registration.
+REM Without this, after a previous studio session the Windows->WSL bridge for
+REM 8770 sometimes stays half-broken and the browser sees ERR_CONNECTION_REFUSED
+REM even though the studio is running fine inside WSL. Cheap (~3 s) and
+REM idempotent.
+echo  Bouncing WSL to refresh localhost forwarding...
+wsl --shutdown
+ping -n 4 127.0.0.1 >nul
+
+
 REM Open the browser after a short delay so the server is ready.
 start "" cmd /c "timeout /t 6 /nobreak >nul && start http://localhost:8770"
 
