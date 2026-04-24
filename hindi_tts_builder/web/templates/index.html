@@ -72,6 +72,36 @@
   .muted { color: var(--muted); font-size: 12px; }
   details { margin-top: 12px; }
   details summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+
+  /* Pipeline progress strip */
+  .stages { display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px; margin: 10px 0 6px; }
+  .stage-cell {
+    background: #11151c; border: 1px solid var(--border); border-radius: 6px;
+    padding: 6px 4px; text-align: center; font-size: 10px; font-family: var(--mono);
+    color: var(--muted); position: relative; overflow: hidden; line-height: 1.2;
+  }
+  .stage-cell .num { font-size: 9px; opacity: 0.65; }
+  .stage-cell .name { font-weight: 600; letter-spacing: 0.3px; text-transform: uppercase; }
+  .stage-cell.done { background: rgba(95, 217, 122, 0.13); border-color: var(--ok); color: var(--ok); }
+  .stage-cell.active { background: rgba(79, 140, 255, 0.18); border-color: var(--accent); color: var(--accent); animation: pulse 1.6s ease-in-out infinite; }
+  .stage-cell.failed { background: rgba(255, 99, 99, 0.18); border-color: var(--danger); color: var(--danger); }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
+
+  /* Training step bar */
+  .train-bar-wrap { background: #11151c; border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; margin-top: 8px; font-size: 12px; }
+  .train-bar-wrap .label { color: var(--muted); font-size: 11px; margin-bottom: 4px; display: flex; justify-content: space-between; }
+  .train-bar { height: 8px; background: #0a0d12; border-radius: 4px; overflow: hidden; }
+  .train-bar .fill { height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent-2)); transition: width 0.4s; width: 0%; }
+  .train-meta { display: flex; gap: 10px; margin-top: 6px; color: var(--muted); font-family: var(--mono); font-size: 11px; flex-wrap: wrap; }
+  .train-meta b { color: var(--text); font-weight: 600; }
+
+  .pair-row { display: grid; grid-template-columns: 22px 1fr 1fr 28px; gap: 8px; align-items: center; margin-top: 6px; }
+  .pair-row .idx { color: var(--muted); font-family: var(--mono); font-size: 11px; text-align: right; }
+  .pair-row input[type=text] { font-family: var(--mono); font-size: 12px; }
+  .pair-row input[type=file] { font-size: 12px; }
+  .pair-row .rm { background: transparent; color: var(--muted); border: 1px solid var(--border); border-radius: 4px; cursor: pointer; width: 24px; height: 24px; line-height: 1; font-size: 14px; padding: 0; }
+  .pair-row .rm:hover { color: var(--danger); border-color: var(--danger); }
+  .pair-row .file-ok { color: var(--ok); font-size: 11px; }
   .pair-row { display: grid; grid-template-columns: 22px 1fr 1fr 28px; gap: 8px; align-items: center; margin-top: 6px; }
   .pair-row .idx { color: var(--muted); font-family: var(--mono); font-size: 11px; text-align: right; }
   .pair-row input[type=text] { font-family: var(--mono); font-size: 12px; }
@@ -132,7 +162,16 @@
       </div>
       <div id="run_msg"></div>
 
-      <h2 style="margin-top: 22px;">Live log <span class="muted" id="log_meta"></span></h2>
+      <h2 style="margin-top: 22px;">Pipeline progress</h2>
+      <div class="stages" id="stages"></div>
+      <div class="muted" id="stage_status">Idle.</div>
+      <div class="train-bar-wrap" id="train_bar_wrap" style="display:none;">
+        <div class="label"><span>Training step</span><span id="train_pct">0.0%</span></div>
+        <div class="train-bar"><div class="fill" id="train_fill"></div></div>
+        <div class="train-meta" id="train_meta"></div>
+      </div>
+
+      <h2 style="margin-top: 18px;">Live log <span class="muted" id="log_meta"></span></h2>
       <div class="logs" id="logs">(no log yet — click "Start training")</div>
     </div>
   </section>
@@ -208,6 +247,7 @@ async function refreshDetail() {
   if (!SELECTED) return;
   try {
     const p = await api('/api/projects/' + SELECTED);
+    CURRENT_MAX_STEPS = p.max_steps || null;
     const c = p.stage_counts;
     $('detail').innerHTML = `
       <div class="grid-status">
@@ -216,7 +256,7 @@ async function refreshDetail() {
         <div class="stat"><div class="v">${c.aligned}</div><div class="k">aligned</div></div>
         <div class="stat"><div class="v">${c.qc_passed}</div><div class="k">qc passed</div></div>
       </div>
-      <div class="muted" style="margin-top:8px;">language: ${p.language || '?'} · sample_rate: ${p.sample_rate || '?'} Hz · engine exported: ${p.engine_exported ? 'yes' : 'no'}</div>
+      <div class="muted" style="margin-top:8px;">language: ${p.language || '?'} · sample_rate: ${p.sample_rate || '?'} Hz · max_steps: ${(p.max_steps || 0).toLocaleString()} · engine exported: ${p.engine_exported ? 'yes' : 'no'}</div>
     `;
     if (p.job && p.job.running) {
       $('start_btn').disabled = true;
@@ -230,14 +270,140 @@ async function refreshDetail() {
   }
 }
 
+// -------------------- Pipeline progress tracking ------------------------
+const PIPELINE_STAGES = [
+  { id: 'download', name: 'download',  re: /---\s*Stage 1:\s*download/i },
+  { id: 'align',    name: 'align',     re: /---\s*Stage 2:\s*align/i },
+  { id: 'segment',  name: 'segment',   re: /---\s*Stage 3:\s*segment/i },
+  { id: 'qc',       name: 'qc',        re: /---\s*Stage 4:\s*quality filter/i },
+  { id: 'build',    name: 'build set', re: /---\s*Stage 5:\s*build training set/i },
+  { id: 'train',    name: 'train',     re: /===\s*Training run starting|Training prepared/i },
+];
+const RE_NEW_RUN      = /^\[studio\]\s*\$/;
+const RE_PIPELINE_OK  = /===\s*Pipeline complete\s*===/i;
+const RE_TRAIN_DONE   = /===\s*Training run complete|Training complete/i;
+const RE_TRAIN_FAIL   = /Training failed:|Training CSV has no records|AttributeError|RuntimeError/i;
+const RE_STEP         = /(?:--?>?\s*)?STEP\s*[:=]\s*(\d+)\s*\/?\s*(\d+)?/i;
+const RE_GLOBAL_STEP  = /global[_ ]?step\s*[:=]\s*(\d+)/i;
+const RE_EPOCH        = /EPOCH\s*[:=]\s*(\d+)\s*\/?\s*(\d+)?/i;
+const RE_LOSS         = /\bloss\s*[:=]\s*([\d.]+(?:[eE][-+]?\d+)?)/i;
+
+let progress = {
+  stageIdx: -1,        // -1 = idle, 0..5 = current stage
+  done: new Set(),     // stages completed (by id)
+  failed: false,
+  trainStep: 0, trainTarget: null, lastLoss: null, lastEpoch: null,
+  stageStartedAt: null,
+};
+
+function renderStages() {
+  const cells = PIPELINE_STAGES.map((s, i) => {
+    let cls = 'stage-cell';
+    if (progress.failed && progress.stageIdx === i) cls += ' failed';
+    else if (progress.done.has(s.id)) cls += ' done';
+    else if (progress.stageIdx === i) cls += ' active';
+    return `<div class="${cls}"><div class="num">${i + 1}/6</div><div class="name">${s.name}</div></div>`;
+  }).join('');
+  $('stages').innerHTML = cells;
+
+  if (progress.stageIdx === -1 && progress.done.size === 0) {
+    $('stage_status').textContent = 'Idle. Click "Start training" to begin.';
+  } else if (progress.failed) {
+    $('stage_status').innerHTML = `<span class="pill fail">failed at ${PIPELINE_STAGES[progress.stageIdx]?.name || 'unknown stage'}</span>`;
+  } else if (progress.done.size === 6) {
+    $('stage_status').innerHTML = '<span class="pill ok">all stages complete ✓</span>';
+  } else if (progress.stageIdx >= 0) {
+    const s = PIPELINE_STAGES[progress.stageIdx];
+    const elapsed = progress.stageStartedAt ? Math.round((Date.now() - progress.stageStartedAt) / 1000) : 0;
+    $('stage_status').innerHTML = `<strong>Stage ${progress.stageIdx + 1} of 6:</strong> ${s.name} <span class="muted">(running ${elapsed}s)</span>`;
+  }
+}
+
+function renderTrainBar(maxSteps) {
+  if (progress.stageIdx === 5 || progress.trainStep > 0) {
+    $('train_bar_wrap').style.display = 'block';
+    const target = progress.trainTarget || maxSteps || null;
+    const pct = target ? Math.min(100, (progress.trainStep / target) * 100) : 0;
+    $('train_pct').textContent = target ? pct.toFixed(2) + '%' : 'unknown target';
+    $('train_fill').style.width = (target ? pct : 0) + '%';
+    const meta = [];
+    meta.push(`step <b>${progress.trainStep.toLocaleString()}</b>${target ? ' / ' + target.toLocaleString() : ''}`);
+    if (progress.lastEpoch !== null) meta.push(`epoch <b>${progress.lastEpoch}</b>`);
+    if (progress.lastLoss !== null) meta.push(`loss <b>${progress.lastLoss.toFixed(4)}</b>`);
+    $('train_meta').innerHTML = meta.join(' · ');
+  } else {
+    $('train_bar_wrap').style.display = 'none';
+  }
+}
+
+function resetProgress() {
+  progress = { stageIdx: -1, done: new Set(), failed: false,
+               trainStep: 0, trainTarget: null, lastLoss: null, lastEpoch: null,
+               stageStartedAt: null };
+  renderStages();
+  renderTrainBar();
+}
+
+function consumeLogLine(line) {
+  if (RE_NEW_RUN.test(line)) { resetProgress(); return; }
+
+  // Stage transitions
+  for (let i = 0; i < PIPELINE_STAGES.length; i++) {
+    if (PIPELINE_STAGES[i].re.test(line)) {
+      // Mark all earlier stages done if not already
+      for (let j = 0; j < i; j++) progress.done.add(PIPELINE_STAGES[j].id);
+      progress.stageIdx = i;
+      progress.stageStartedAt = Date.now();
+      progress.failed = false;
+      return;
+    }
+  }
+  if (RE_PIPELINE_OK.test(line)) {
+    // Stages 1-5 (prepare) finished
+    for (let j = 0; j <= 4; j++) progress.done.add(PIPELINE_STAGES[j].id);
+    if (progress.stageIdx < 5) progress.stageIdx = 4;
+    return;
+  }
+  if (RE_TRAIN_DONE.test(line)) {
+    progress.done.add('train');
+    progress.stageIdx = 5;
+    return;
+  }
+  if (RE_TRAIN_FAIL.test(line)) {
+    progress.failed = true;
+    return;
+  }
+
+  // Training step counter
+  let m = line.match(RE_GLOBAL_STEP) || line.match(RE_STEP);
+  if (m) {
+    progress.trainStep = parseInt(m[1], 10);
+    if (m[2]) progress.trainTarget = parseInt(m[2], 10);
+    if (progress.stageIdx < 5) progress.stageIdx = 5;   // promote to train if we see step output
+    progress.stageStartedAt = progress.stageStartedAt || Date.now();
+  }
+  m = line.match(RE_EPOCH);
+  if (m) {
+    progress.lastEpoch = parseInt(m[1], 10);
+  }
+  m = line.match(RE_LOSS);
+  if (m) {
+    progress.lastLoss = parseFloat(m[1]);
+  }
+}
+
+let CURRENT_MAX_STEPS = null;
+
 function startLogStream(name) {
   if (LOG_ES) { LOG_ES.close(); LOG_ES = null; }
   $('logs').textContent = '';
+  resetProgress();
   const es = new EventSource('/api/projects/' + name + '/logs');
   LOG_ES = es;
   es.onmessage = (ev) => {
     try {
       const line = JSON.parse(ev.data);
+      consumeLogLine(line);
       const div = document.createElement('div');
       const lower = line.toLowerCase();
       if (lower.includes('error') || lower.includes('traceback')) div.className = 'err';
@@ -246,6 +412,8 @@ function startLogStream(name) {
       div.textContent = line;
       $('logs').appendChild(div);
       $('logs').scrollTop = $('logs').scrollHeight;
+      renderStages();
+      renderTrainBar(CURRENT_MAX_STEPS);
     } catch {}
   };
   es.addEventListener('done', () => {
@@ -254,6 +422,11 @@ function startLogStream(name) {
   });
   es.onerror = () => { /* swallow; SSE auto-reconnects */ };
 }
+
+// Refresh stage status timer (so "running 14s" updates without new log lines)
+setInterval(() => { if (progress.stageIdx >= 0 && !progress.failed) { renderStages(); renderTrainBar(CURRENT_MAX_STEPS); } }, 1000);
+// Render the empty stage strip on page load
+renderStages();
 
 // -------------------- URL ↔ SRT pair rows -------------------------
 function renumberPairs() {

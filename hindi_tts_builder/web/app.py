@@ -210,6 +210,14 @@ def _project_summary(p: Path, registry: JobRegistry) -> dict:
     except Exception:
         pass
 
+    # max_steps from training_config.yaml (falls back to default 500k)
+    train_cfg = {}
+    try:
+        train_cfg = yaml.safe_load((p / "training_config.yaml").read_text(encoding="utf-8")) or {}
+    except Exception:
+        pass
+    max_steps = int(train_cfg.get("max_steps", 500_000))
+
     manifest_file = p / "sources" / "manifest.json"
     sources_count = 0
     counts = {"downloaded": 0, "aligned": 0, "segmented": 0, "qc_passed": 0}
@@ -234,6 +242,7 @@ def _project_summary(p: Path, registry: JobRegistry) -> dict:
         "sample_rate": cfg.get("target_sample_rate"),
         "sources_count": sources_count,
         "stage_counts": counts,
+        "max_steps": max_steps,
         "engine_exported": (p / "engine" / "manifest.json").exists(),
         "job": job.to_dict() if job else None,
     }
