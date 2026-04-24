@@ -424,7 +424,7 @@ function consumeLogLine(line) {
   }
 
   // Training step counter
-  let m = line.match(RE_GLOBAL_STEP) || line.match(RE_STEP);
+  m = line.match(RE_GLOBAL_STEP) || line.match(RE_STEP);
   if (m) {
     progress.trainStep = parseInt(m[1], 10);
     if (m[2]) progress.trainTarget = parseInt(m[2], 10);
