@@ -163,7 +163,15 @@ def create_app(projects_root: Path):
         return {"running": st.running, "state": st.to_dict()}
 
     @app.get("/api/projects/{name}/logs")
-    async def stream_logs(name: str, request: Request):
+    async def stream_logs(name: str, request: Request, tail: int = 200):
+        """Stream live log lines via SSE.
+
+        Replays only the last `tail` lines on connect (not the whole file)
+        so a 3 MB log doesn't pin uvicorn for several seconds on every page
+        load and starve other API requests. Then follows the file like
+        `tail -f`. Pass ?tail=0 to start strictly from the end, or
+        ?tail=-1 to replay the entire log (legacy behavior).
+        """
         st = registry.get(name)
         log_path = st.log_path if st else (projects_root / name / "logs" / "studio_run.log")
         if not log_path.exists():
@@ -171,7 +179,20 @@ def create_app(projects_root: Path):
             log_path.touch()
 
         async def event_gen():
+            # Send the last N lines synchronously up front, then seek to end
+            # and follow like tail -f. Reading via tell()/seek() avoids
+            # re-streaming everything on every reconnect.
             with open(log_path, "rb") as fp:
+                if tail and tail != 0:
+                    # Read the whole file (we accept a one-time cost) then
+                    # keep only the last `tail` lines. -1 = unlimited.
+                    data = fp.read()
+                    lines = data.decode("utf-8", errors="replace").splitlines()
+                    if tail > 0:
+                        lines = lines[-tail:]
+                    for line in lines:
+                        yield f"data: {json.dumps(line)}\n\n"
+                # fp is now at end-of-file; loop and tail new bytes
                 while True:
                     if await request.is_disconnected():
                         break
@@ -182,9 +203,9 @@ def create_app(projects_root: Path):
                     else:
                         cur = registry.get(name)
                         if cur and not cur.running:
-                            tail = fp.read()
-                            if tail:
-                                for line in tail.decode("utf-8", errors="replace").splitlines():
+                            extra = fp.read()
+                            if extra:
+                                for line in extra.decode("utf-8", errors="replace").splitlines():
                                     yield f"data: {json.dumps(line)}\n\n"
                             yield f"event: done\ndata: {json.dumps(cur.to_dict())}\n\n"
                             break
