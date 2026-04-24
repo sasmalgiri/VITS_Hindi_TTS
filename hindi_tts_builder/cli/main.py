@@ -105,7 +105,8 @@ def add_sources(name: str, urls_file: Path, transcripts_dir: Path):
 @click.argument("name")
 @click.option("--no-whisperx", is_flag=True, help="Skip WhisperX alignment (use SRT timestamps as-is)")
 @click.option("--no-whisper-qc", is_flag=True, help="Skip Whisper round-trip QC filtering")
-def prepare(name: str, no_whisperx: bool, no_whisper_qc: bool):
+@click.option("--skip-qc", is_flag=True, help="Skip QC entirely; mark every clip as passed (use when SRTs are trusted)")
+def prepare(name: str, no_whisperx: bool, no_whisper_qc: bool, skip_qc: bool):
     """Run full data pipeline: download → align → segment → QC → build dataset."""
     from hindi_tts_builder.data.pipeline import run_pipeline
     pp = _project_path(name)
@@ -117,6 +118,7 @@ def prepare(name: str, no_whisperx: bool, no_whisper_qc: bool):
             pp,
             use_whisperx=not no_whisperx,
             use_whisper_qc=not no_whisper_qc,
+            skip_qc=skip_qc,
         )
     except Exception as e:
         _echo_err(f"Pipeline failed: {e}")

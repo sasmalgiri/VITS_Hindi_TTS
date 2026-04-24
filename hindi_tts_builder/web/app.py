@@ -144,6 +144,7 @@ def create_app(projects_root: Path):
                 skip_train=bool(opts.get("skip_train", False)),
                 no_whisperx=bool(opts.get("no_whisperx", False)),
                 no_whisper_qc=bool(opts.get("no_whisper_qc", False)),
+                skip_qc=bool(opts.get("skip_qc", False)),
             )
         except RuntimeError as e:
             raise HTTPException(409, str(e))

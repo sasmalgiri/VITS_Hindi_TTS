@@ -70,14 +70,51 @@ def add_sources_from_files(
     return added
 
 
+def _passthrough_qc(paths: ProjectPaths, manifest: Manifest, log) -> dict:
+    """Mark every segmented clip as passed without scoring it. Use when you
+    fully trust your SRT-audio match and don't want noisy/strict thresholds
+    to silently throw away training data.
+    """
+    import csv
+    paths.training_set.mkdir(parents=True, exist_ok=True)
+    report = paths.training_set / "qc_report.csv"
+    summary = {"total": 0, "passed": 0, "failed_snr": 0, "failed_silence": 0,
+               "failed_cer": 0, "failed_duration": 0}
+    with report.open("w", encoding="utf-8", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["clip_id", "source_id", "duration", "snr_db", "silence_ratio",
+                    "whisper_cer", "passed", "reason"])
+        for src in manifest:
+            if not src.status.segmented:
+                continue
+            clip_dir = paths.aligned / src.id
+            if not clip_dir.exists():
+                continue
+            for clip_wav in sorted(clip_dir.glob(f"{src.id}_c*.wav")):
+                clip_id = clip_wav.stem
+                summary["total"] += 1
+                summary["passed"] += 1
+                w.writerow([clip_id, src.id, "", "", "", "", 1, "qc_skipped"])
+            src.status.qc_passed = True
+            manifest.save()
+    log.info(f"qc skipped: marked {summary['passed']}/{summary['total']} clips as passed")
+    return summary
+
+
 def run_pipeline(
     project_root: Path,
     *,
     use_whisperx: bool = True,
     use_whisper_qc: bool = True,
+    skip_qc: bool = False,
     logger=None,
 ) -> dict:
-    """Run the full data pipeline end-to-end. Returns a combined summary."""
+    """Run the full data pipeline end-to-end. Returns a combined summary.
+
+    skip_qc=True bypasses Stage 4 entirely - every segmented clip is taken
+    as-is. Use when your SRTs are known good and the default thresholds
+    (calibrated for clean studio audio) reject too much narration content.
+    """
     paths = ProjectPaths(project_root)
     cfg = load_config(project_root)
     log = logger or get_logger("data.pipeline", paths.logs / "pipeline.log")
@@ -108,19 +145,23 @@ def run_pipeline(
         logger=log,
     )
 
-    log.info("--- Stage 4: quality filter ---")
-    qc_cfg = cfg["qc"]
-    s4 = quality_filter(
-        paths, manifest,
-        min_snr_db=qc_cfg["min_snr_db"],
-        max_cer_vs_whisper=qc_cfg["max_cer_vs_whisper"],
-        max_silence_ratio=qc_cfg["max_silence_ratio"],
-        min_seconds=cfg["clip_min_seconds"],
-        max_seconds=cfg["clip_max_seconds"],
-        use_whisper=use_whisper_qc,
-        language=cfg.get("language", "hi"),
-        logger=log,
-    )
+    if skip_qc:
+        log.info("--- Stage 4: quality filter --- (SKIPPED, --skip-qc set)")
+        s4 = _passthrough_qc(paths, manifest, log)
+    else:
+        log.info("--- Stage 4: quality filter ---")
+        qc_cfg = cfg["qc"]
+        s4 = quality_filter(
+            paths, manifest,
+            min_snr_db=qc_cfg["min_snr_db"],
+            max_cer_vs_whisper=qc_cfg["max_cer_vs_whisper"],
+            max_silence_ratio=qc_cfg["max_silence_ratio"],
+            min_seconds=cfg["clip_min_seconds"],
+            max_seconds=cfg["clip_max_seconds"],
+            use_whisper=use_whisper_qc,
+            language=cfg.get("language", "hi"),
+            logger=log,
+        )
 
     log.info("--- Stage 5: build training set ---")
     frontend = HindiFrontend()

@@ -151,9 +151,10 @@
 
     <div id="controls" style="display:none;">
       <div class="checks">
-        <label><input type="checkbox" id="opt_no_whisperx" /> Skip WhisperX alignment</label>
-        <label><input type="checkbox" id="opt_no_whisper_qc" /> Skip Whisper round-trip QC</label>
-        <label><input type="checkbox" id="opt_skip_train" /> Prepare data only (don't train)</label>
+        <label title="Don't run WhisperX timestamp refinement; use SRT timestamps as-is."><input type="checkbox" id="opt_no_whisperx" /> Skip WhisperX alignment</label>
+        <label title="Don't compare Whisper transcription to SRT text. Other QC checks (SNR, silence) still run."><input type="checkbox" id="opt_no_whisper_qc" /> Skip Whisper round-trip QC</label>
+        <label title="Bypass Stage 4 entirely - take every clip as-is. Use when you trust your SRTs."><input type="checkbox" id="opt_skip_qc" /> Skip QC entirely (trust the data)</label>
+        <label title="Run prepare only; don't kick off training."><input type="checkbox" id="opt_skip_train" /> Prepare data only (don't train)</label>
       </div>
       <div class="row" style="margin-top: 14px;">
         <button class="btn" id="start_btn">Start training</button>
@@ -554,6 +555,7 @@ $('start_btn').onclick = async () => {
   const opts = {
     no_whisperx: $('opt_no_whisperx').checked,
     no_whisper_qc: $('opt_no_whisper_qc').checked,
+    skip_qc: $('opt_skip_qc').checked,
     skip_train: $('opt_skip_train').checked,
   };
   $('start_btn').disabled = true;

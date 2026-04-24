@@ -76,6 +76,7 @@ class JobRegistry:
         skip_train: bool = False,
         no_whisperx: bool = False,
         no_whisper_qc: bool = False,
+        skip_qc: bool = False,
     ) -> JobState:
         """Launch `prepare` then `train` (unless skip_train) as a single
         background subprocess chain. stdout+stderr → log file.
@@ -97,6 +98,8 @@ class JobRegistry:
             prepare_cmd.append("--no-whisperx")
         if no_whisper_qc:
             prepare_cmd.append("--no-whisper-qc")
+        if skip_qc:
+            prepare_cmd.append("--skip-qc")
         train_cmd = cli + ["train", project]
 
         # Chain: run prepare; if it succeeds and skip_train is False, run train.
