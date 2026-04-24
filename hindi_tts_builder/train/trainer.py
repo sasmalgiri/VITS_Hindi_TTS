@@ -43,12 +43,14 @@ def _try_import_coqui():
         from TTS.tts.configs.vits_config import VitsConfig  # type: ignore
         from TTS.tts.models.vits import Vits, VitsAudioConfig  # type: ignore
         from TTS.config.shared_configs import BaseDatasetConfig  # type: ignore
+        from TTS.tts.datasets import load_tts_samples  # type: ignore
         from TTS.utils.audio import AudioProcessor  # type: ignore
         from trainer import Trainer as CoquiTrainer, TrainerArgs  # type: ignore
         return {
             "VitsConfig": VitsConfig,
             "VitsAudioConfig": VitsAudioConfig,
             "BaseDatasetConfig": BaseDatasetConfig,
+            "load_tts_samples": load_tts_samples,
             "Vits": Vits,
             "AudioProcessor": AudioProcessor,
             "CoquiTrainer": CoquiTrainer,
@@ -94,13 +96,19 @@ def _hindi_csv_formatter(root_path, meta_file, **kwargs):
 
 
 def _register_formatter():
-    """Inject our formatter into Coqui's formatters namespace so
+    """Add our formatter to Coqui's _FORMATTER_REGISTRY so
     BaseDatasetConfig(formatter='hindi_csv') resolves to it.
+
+    Coqui exposes register_formatter(name, fn) as the public API. It
+    raises ValueError if the name already exists (idempotent re-runs
+    in the same process), so we swallow that case.
     """
     try:
-        from TTS.tts.datasets import formatters as _fmt  # type: ignore
-        if not hasattr(_fmt, "hindi_csv"):
-            setattr(_fmt, "hindi_csv", _hindi_csv_formatter)
+        from TTS.tts.datasets import register_formatter  # type: ignore
+        try:
+            register_formatter("hindi_csv", _hindi_csv_formatter)
+        except ValueError:
+            pass  # already registered in this process
     except ImportError:
         pass
 
@@ -280,11 +288,26 @@ class Trainer:
         Vits = coqui["Vits"]
         model = Vits.init_from_config(config)
 
+        # Pre-load samples and pass them in. CoquiTrainer's internal data-loader
+        # path expects samples to already be on the trainer instance; without
+        # them the VitsDataset gets samples=None and crashes with
+        #   TypeError: object of type 'NoneType' has no len()
+        load_tts_samples = coqui["load_tts_samples"]
+        train_samples, eval_samples = load_tts_samples(
+            config.datasets,
+            eval_split=True,
+            eval_split_max_size=getattr(config, "eval_split_max_size", None),
+            eval_split_size=getattr(config, "eval_split_size", 0.01),
+        )
+        self.log.info(f"Coqui loaded {len(train_samples)} train samples, {len(eval_samples)} eval samples")
+
         trainer = CoquiTrainer(
             args,
             config,
             str(self.paths.checkpoints),
             model=model,
+            train_samples=train_samples,
+            eval_samples=eval_samples,
         )
         trainer.fit()
         self.log.info("=== Training run complete ===")
