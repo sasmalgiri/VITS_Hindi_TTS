@@ -72,7 +72,10 @@ def _try_import_coqui():
 _CHARS_DEVANAGARI = "".join(chr(i) for i in range(0x0900, 0x0980))
 _CHARS_DIGITS = "0123456789"
 _CHARS_FOR_COQUI = _CHARS_DEVANAGARI + _CHARS_DIGITS
-_PUNCT_FOR_COQUI = " !?,.-:;।'\""
+# Hindi danda U+0964 lives inside the Devanagari block above, so don't
+# also list it here — Coqui's CharactersConfig rejects duplicates with
+# "[!] There are duplicate characters in the character set. {'।'}".
+_PUNCT_FOR_COQUI = " !?,.-:;'\""
 
 # Hindi sample sentences for Coqui's eval-time synthesis. Replaces the
 # default English "It took me quite a long time to develop a voice..."
