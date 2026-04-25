@@ -69,14 +69,14 @@ class TrainingConfig:
     model: ModelConfig = field(default_factory=ModelConfig)
     optim: OptimConfig = field(default_factory=OptimConfig)
 
-    # Training loop
-    batch_size: int = 16
-    grad_accum_steps: int = 2
-    max_steps: int = 500_000
+    # Training loop (tuned for 12 GB GPU shared with a Windows desktop)
+    batch_size: int = 20                 # bumped from 16; 24 risked OOM with desktop GPU usage
+    grad_accum_steps: int = 1            # was 2; effective batch = batch_size now
+    max_steps: int = 150_000             # was 500k; ~18 h on RTX 3060 to a usable model
     epochs: int = 10_000                 # effectively uncapped; max_steps is the real limit
     seed: int = 1234
     mixed_precision: str = "bf16"        # "bf16", "fp16", or "none"
-    num_workers: int = 4                 # WSL2/Linux default; Windows native should use 0
+    num_workers: int = 8                 # was 4; user has 12 CPUs; faster data loading
 
     # Sequence limits
     max_audio_length_sec: float = 10.0   # skip clips longer than this
@@ -85,11 +85,11 @@ class TrainingConfig:
     # Checkpointing
     checkpoint_every_steps: int = 10_000
     keep_last_n_checkpoints: int = 5
-    sample_every_steps: int = 25_000     # generate samples for auditioning
+    sample_every_steps: int = 100_000    # was 25k; less synth-overhead during training
     n_sample_sentences: int = 8
 
     # Eval / health
-    eval_every_steps: int = 5_000
+    eval_every_steps: int = 20_000       # was 5k; less eval overhead, BEST still saves on improvement
     val_batch_size: int = 8
     nan_check_every: int = 100
     max_grad_norm_warn: float = 50.0

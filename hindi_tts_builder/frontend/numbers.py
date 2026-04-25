@@ -55,12 +55,19 @@ def _expand_date_dmy(d: int, m: int, y: int) -> str:
 
 
 # Regexes — ordered by specificity
-_TIME_RE   = re.compile(r"\b(\d{1,2}):(\d{2})\b")
-_DATE_RE   = re.compile(r"\b(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})\b")
-_PCT_RE    = re.compile(r"\b(\d+(?:\.\d+)?)\s*%")
+# NOTE: cannot use \b for digit boundaries because Python 3's \w (default
+# UNICODE mode) includes Devanagari letters, so "15वें" does NOT match
+# \b\d+\b — \b is suppressed between '5' and 'व'. Use ASCII-only boundary
+# (?<![A-Za-z0-9_]) ... (?![A-Za-z0-9_]) so digits adjacent to Devanagari
+# (and any other non-Latin script) still get normalized.
+_ASCII_BL = r"(?<![A-Za-z0-9_])"
+_ASCII_BR = r"(?![A-Za-z0-9_])"
+_TIME_RE   = re.compile(_ASCII_BL + r"(\d{1,2}):(\d{2})" + _ASCII_BR)
+_DATE_RE   = re.compile(_ASCII_BL + r"(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})" + _ASCII_BR)
+_PCT_RE    = re.compile(_ASCII_BL + r"(\d+(?:\.\d+)?)\s*%")
 _CURR_RE   = re.compile(r"(?:₹|Rs\.?\s*)(\d+(?:\.\d+)?)")
-_DECIMAL_RE = re.compile(r"\b\d+\.\d+\b")
-_INT_RE    = re.compile(r"\b\d+\b")
+_DECIMAL_RE = re.compile(_ASCII_BL + r"\d+\.\d+" + _ASCII_BR)
+_INT_RE    = re.compile(_ASCII_BL + r"\d+" + _ASCII_BR)
 
 
 def expand_numbers(text: str) -> str:

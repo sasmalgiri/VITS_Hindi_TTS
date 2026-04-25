@@ -41,6 +41,7 @@ def _try_import_coqui():
     """Return the Coqui modules we need, or None if unavailable."""
     try:
         from TTS.tts.configs.vits_config import VitsConfig  # type: ignore
+        from TTS.tts.configs.shared_configs import CharactersConfig  # type: ignore
         from TTS.tts.models.vits import Vits, VitsAudioConfig  # type: ignore
         from TTS.config.shared_configs import BaseDatasetConfig  # type: ignore
         from TTS.tts.datasets import load_tts_samples  # type: ignore
@@ -49,6 +50,7 @@ def _try_import_coqui():
         return {
             "VitsConfig": VitsConfig,
             "VitsAudioConfig": VitsAudioConfig,
+            "CharactersConfig": CharactersConfig,
             "BaseDatasetConfig": BaseDatasetConfig,
             "load_tts_samples": load_tts_samples,
             "Vits": Vits,
@@ -58,6 +60,68 @@ def _try_import_coqui():
         }
     except ImportError:
         return None
+
+
+# Hindi character set fed to Coqui's Graphemes tokenizer.
+#   - Full Devanagari Unicode block (U+0900..U+097F) so any rare-but-valid
+#     char is supported without needing to refit on every dataset.
+#   - ASCII digits 0-9 as a safety net (the frontend's number normalizer
+#     should catch them all, but if any leak through they still tokenize
+#     instead of becoming <unk>).
+# Punctuation kept separate per Coqui's Graphemes contract.
+_CHARS_DEVANAGARI = "".join(chr(i) for i in range(0x0900, 0x0980))
+_CHARS_DIGITS = "0123456789"
+_CHARS_FOR_COQUI = _CHARS_DEVANAGARI + _CHARS_DIGITS
+_PUNCT_FOR_COQUI = " !?,.-:;।'\""
+
+# Hindi sample sentences for Coqui's eval-time synthesis. Replaces the
+# default English "It took me quite a long time to develop a voice..."
+# which produces meaningless eval samples for a Hindi model.
+HINDI_TEST_SENTENCES = [
+    ["नमस्ते दुनिया।"],
+    ["यह एक परीक्षण है।"],
+    ["मेरा नाम क्या है?"],
+    ["आज मौसम बहुत अच्छा है।"],
+    ["हिंदी में बोलना सीखना आसान है।"],
+]
+
+
+def _build_characters_config(coqui):
+    """Build Coqui's CharactersConfig with the full Devanagari + digits set."""
+    return coqui["CharactersConfig"](
+        characters_class="TTS.tts.utils.text.characters.Graphemes",
+        pad="<PAD>",
+        eos="<EOS>",
+        bos="<BOS>",
+        blank="<BLNK>",
+        characters=_CHARS_FOR_COQUI,
+        punctuations=_PUNCT_FOR_COQUI,
+    )
+
+
+def _preflight_text_compat(samples, characters_config, log) -> None:
+    """Fail fast if any training text contains a char not in the configured
+    vocab. Without this check the bug we hit for h_tts_1 (model trained on
+    default English alphabet, all Hindi chars discarded as <unk>) is silent
+    until you try to synthesize and hear noise.
+    """
+    valid = set(characters_config.characters) | set(characters_config.punctuations)
+    seen = set()
+    for s in samples:
+        seen.update(s.get("text", ""))
+    missing = sorted(seen - valid - {characters_config.pad, characters_config.eos,
+                                     characters_config.bos, characters_config.blank})
+    if missing:
+        sample_str = ", ".join(repr(c) + f"(U+{ord(c):04X})" for c in missing[:20])
+        more = f" (+{len(missing)-20} more)" if len(missing) > 20 else ""
+        raise RuntimeError(
+            "Pre-flight tokenizer compat check FAILED.\n"
+            f"  {len(missing)} character(s) appear in training text but are NOT in CharactersConfig:\n"
+            f"  {sample_str}{more}\n"
+            "  Either extend _CHARS_FOR_COQUI / _PUNCT_FOR_COQUI in trainer.py, "
+            "or strip these chars in the frontend before they reach the dataset."
+        )
+    log.info(f"Pre-flight: all {len(seen)} unique chars in training text are covered by CharactersConfig.")
 
 
 def _hindi_csv_formatter(root_path, meta_file, **kwargs):
@@ -247,10 +311,18 @@ class Trainer:
             mel_fmax=mc.mel_fmax,
         )
 
+        # Hindi character set for Coqui's text encoder. Without this Coqui
+        # falls back to its default 67-char English alphabet and silently
+        # discards every Devanagari char as <unk>. (This is the bug that
+        # wasted h_tts_1's first 86k training steps.)
+        characters_cfg = _build_characters_config(coqui)
+
         config = VitsConfig(
             run_name=self.project_config.get("name", "hindi_tts"),
             output_path=str(self.paths.checkpoints),
             audio=audio_cfg,
+            characters=characters_cfg,
+            test_sentences=HINDI_TEST_SENTENCES,
             # Training
             batch_size=tc.batch_size,
             eval_batch_size=tc.val_batch_size,
@@ -300,6 +372,16 @@ class Trainer:
             eval_split_size=getattr(config, "eval_split_size", 0.01),
         )
         self.log.info(f"Coqui loaded {len(train_samples)} train samples, {len(eval_samples)} eval samples")
+
+        # Pre-flight: every char in training text must be in CharactersConfig,
+        # otherwise we silently train on <unk>-padded garbage. Run BEFORE
+        # building the model so we fail in seconds, not after model init.
+        _preflight_text_compat(train_samples + eval_samples, characters_cfg, self.log)
+        self.log.info(
+            f"Coqui character set: {len(characters_cfg.characters)} chars + "
+            f"{len(characters_cfg.punctuations)} punctuations "
+            f"(our HindiTokenizer has {self.tokenizer.vocab_size} tokens for inference-side use)"
+        )
 
         trainer = CoquiTrainer(
             args,

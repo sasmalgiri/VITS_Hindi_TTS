@@ -50,12 +50,22 @@ class TestSplit:
 
 
 class TestFit:
-    def test_adds_new_chars(self):
+    def test_devanagari_chars_present_after_fit(self):
+        # Tokenizer pre-seeds the full Devanagari Unicode block, so fitting
+        # on Hindi text doesn't necessarily grow the vocab — but every char
+        # in the training text MUST be representable.
+        t = HindiTokenizer()
+        t.fit(["नमस्ते दुनिया"])
+        for ch in "नमस्तेदुनिया":
+            assert ch in t.token_to_id
+
+    def test_adds_truly_new_chars(self):
+        # Latin chars are NOT in the pre-seed; fit() must extend vocab.
         t = HindiTokenizer()
         initial_size = t.vocab_size
-        t.fit(["नमस्ते दुनिया"])
+        t.fit(["hello"])
         assert t.vocab_size > initial_size
-        for ch in "नमस्तेदुनिया":
+        for ch in "helo":
             assert ch in t.token_to_id
 
     def test_idempotent(self):

@@ -175,7 +175,12 @@ def run_pipeline(
         )
 
     log.info("--- Stage 5: build training set ---")
-    frontend = HindiFrontend()
+    # v1: prosody tokens (<falling>, <p_short>, etc.) are disabled because
+    # Coqui's character-level Graphemes tokenizer would split a multi-char
+    # token like '<falling>' into 9 separate single-char tokens, losing
+    # the atomic semantic meaning. Re-enable when an atomic-aware tokenizer
+    # subclass is in place. See trainer.py / TASKS.md.
+    frontend = HindiFrontend(apply_prosody=False)
     s5 = build_training_set(paths, frontend=frontend, logger=log)
 
     summary = {

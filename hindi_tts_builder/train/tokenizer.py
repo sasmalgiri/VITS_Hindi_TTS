@@ -37,17 +37,37 @@ RESERVED_TOKENS = [PAD_TOKEN, BOS_TOKEN, EOS_TOKEN, UNK_TOKEN, SPACE_TOKEN]
 _PROSODY_RE = re.compile(r"<[a-z_]+>")
 
 
+# Pre-seed with the full Devanagari Unicode block (U+0900..U+097F) so any
+# rare-but-valid char (vocalic R 'ृ', palatal nasal 'ञ', chandrabindu 'ँ',
+# visarga 'ः', etc.) is supported even if it doesn't appear in this run's
+# training corpus. Better than discovering a missing char only at inference
+# and emitting <unk>.
+_DEVANAGARI_BLOCK = [chr(i) for i in range(0x0900, 0x0980)]
+_ASCII_DIGITS = list("0123456789")
+_BASIC_PUNCT = list(" !?,.-:;।'\"")  # space + Hindi punctuation
+
+
 class HindiTokenizer:
     """Character-level tokenizer with prosody-token awareness."""
 
     def __init__(self, vocab: list[str] | None = None):
         """Initialize with a given vocab or build an empty one.
 
-        Order of IDs is: RESERVED_TOKENS first, then prosody tokens, then chars.
+        Order of IDs is: RESERVED_TOKENS, prosody tokens, full Devanagari
+        block, ASCII digits, basic punctuation. fit() can extend further.
         """
         if vocab is None:
             prosody = all_prosody_tokens()
-            vocab = list(RESERVED_TOKENS) + sorted(prosody)
+            seeded = (
+                list(RESERVED_TOKENS)
+                + sorted(prosody)
+                + _DEVANAGARI_BLOCK
+                + _ASCII_DIGITS
+                + _BASIC_PUNCT
+            )
+            # Dedupe while preserving first-occurrence order
+            seen = set()
+            vocab = [t for t in seeded if not (t in seen or seen.add(t))]
         self.id_to_token = list(vocab)
         self.token_to_id = {tok: i for i, tok in enumerate(vocab)}
 
