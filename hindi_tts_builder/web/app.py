@@ -162,6 +162,56 @@ def create_app(projects_root: Path):
         ok = registry.stop(name)
         return {"signalled": ok}
 
+    @app.post("/api/projects/{name}/avatar")
+    async def upload_avatar(name: str, file: UploadFile = File(...)):
+        """Upload a custom avatar image for a project. Stored at
+        projects/<name>/avatar.<ext>; served via /api/projects/<name>/avatar.
+        Lets the user drop in a donghua/anime portrait they generated
+        elsewhere instead of relying on the procedural SVG character.
+        """
+        proj_dir = projects_root / name
+        if not (proj_dir / "config.yaml").exists():
+            raise HTTPException(404, f"no project '{name}'")
+        if not file.filename:
+            raise HTTPException(400, "no filename")
+        # Accept common image types only
+        allowed = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg"}
+        ext = Path(file.filename).suffix.lower()
+        if ext not in allowed:
+            raise HTTPException(400, f"unsupported image type {ext!r}; use png/jpg/webp/gif/svg")
+        # Wipe any prior avatar with a different extension
+        for old in proj_dir.glob("avatar.*"):
+            try: old.unlink()
+            except OSError: pass
+        target = proj_dir / f"avatar{ext}"
+        data = await file.read()
+        if len(data) > 8 * 1024 * 1024:
+            raise HTTPException(400, "avatar must be < 8 MiB")
+        target.write_bytes(data)
+        return {"name": name, "avatar_path": f"avatar{ext}", "bytes": len(data)}
+
+    @app.get("/api/projects/{name}/avatar")
+    def get_avatar(name: str):
+        """Return the project's uploaded avatar image, or 404 if none."""
+        from fastapi.responses import FileResponse
+        proj_dir = projects_root / name
+        for ext in (".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg"):
+            p = proj_dir / f"avatar{ext}"
+            if p.exists():
+                media = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+                         "webp": "image/webp", "gif": "image/gif", "svg": "image/svg+xml"}[ext.lstrip(".")]
+                return FileResponse(p, media_type=media)
+        raise HTTPException(404, "no avatar uploaded")
+
+    @app.delete("/api/projects/{name}/avatar")
+    def delete_avatar(name: str):
+        proj_dir = projects_root / name
+        removed = False
+        for old in proj_dir.glob("avatar.*"):
+            try: old.unlink(); removed = True
+            except OSError: pass
+        return {"removed": removed}
+
     @app.get("/api/projects/{name}/status")
     def status(name: str):
         st = registry.get(name)
@@ -265,6 +315,8 @@ def _project_summary(p: Path, registry: JobRegistry) -> dict:
             pass
 
     job = registry.get(p.name)
+    has_avatar = any((p / f"avatar{ext}").exists()
+                     for ext in (".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg"))
     return {
         "name": p.name,
         "language": cfg.get("language"),
@@ -273,6 +325,7 @@ def _project_summary(p: Path, registry: JobRegistry) -> dict:
         "stage_counts": counts,
         "max_steps": max_steps,
         "engine_exported": (p / "engine" / "manifest.json").exists(),
+        "has_avatar": has_avatar,
         "job": job.to_dict() if job else None,
     }
 

@@ -285,6 +285,7 @@ const $ = (id) => document.getElementById(id);
 let SELECTED = null;
 let LOG_ES = null;
 let LAST_PROJECT_DATA = null;   // cached for the voice-card live refresh
+const AVATAR_BUST = {};         // {projectName: timestamp} — bumped on upload/delete
 
 async function api(path, opts = {}) {
   const res = await fetch(path, opts);
@@ -545,8 +546,12 @@ async function refreshProjects() {
     for (const p of data.projects) {
       const div = document.createElement('div');
       div.className = 'proj-tile' + (SELECTED === p.name ? ' selected' : '');
-      const avatar = avatarFor(p.name);
-      // Build chip strip: language, hours, qc status, engine flag, training state
+      // If user uploaded an avatar, show it as the tile thumbnail; otherwise emoji
+      const avatarHtml = p.has_avatar
+        ? `<img src="/api/projects/${encodeURIComponent(p.name)}/avatar"
+                style="width:100%; height:100%; border-radius:50%; object-fit:cover;"
+                alt=""/>`
+        : avatarFor(p.name);
       const chips = [];
       chips.push(`<span class="pchip">${p.language === 'hi' ? 'हिंदी' : (p.language || '?')}</span>`);
       if (p.sources_count) {
@@ -556,7 +561,7 @@ async function refreshProjects() {
       if (p.engine_exported) chips.push('<span class="pchip ok">engine ✓</span>');
       if (p.job?.running)    chips.push('<span class="pchip run">training</span>');
       div.innerHTML = `
-        <div class="proj-avatar">${avatar}</div>
+        <div class="proj-avatar">${avatarHtml}</div>
         <div class="proj-info">
           <div class="pn">${escapeHtml(p.name)}</div>
           <div class="pchips">${chips.join('')}</div>
@@ -629,21 +634,75 @@ function renderVoiceCard(p) {
   const lossPct = lossCount ? lossSum / lossCount : 0;
   const maturity = 0.3 * stepPct + 0.7 * lossPct;
 
-  const charSvg = renderCharacterSVG({
-    maturity,
-    bestsSeen: progress.bestsSeen || 0,
-    training: !!p.job?.running,
-  });
+  // Center: uploaded avatar image (if user dropped one in) OR procedural SVG.
+  // We cache-bust the avatar URL only when an upload/delete happens (see
+  // AVATAR_BUST below) so the browser doesn't re-fetch the image every second.
+  let centerHtml;
+  if (p.has_avatar) {
+    const bust = AVATAR_BUST[p.name] || 0;
+    centerHtml = `<img src="/api/projects/${encodeURIComponent(p.name)}/avatar?v=${bust}"
+                       alt="${escapeHtml(p.name)} avatar"
+                       style="width:100%; height:100%; border-radius:50%; object-fit:cover;
+                              border: 3px solid var(--accent-2);
+                              box-shadow: 0 0 25px rgba(45,212,191,0.4);"/>`;
+  } else {
+    centerHtml = renderCharacterSVG({
+      maturity,
+      bestsSeen: progress.bestsSeen || 0,
+      training: !!p.job?.running,
+    });
+  }
 
   wrap.innerHTML = `
     <div class="voice-card">
       <div class="vc-orbit">
         <div class="vc-ring"></div>
         ${orbits}
-        <div class="vc-avatar" title="${escapeHtml(p.name)} — maturity ${maturity.toFixed(1)}%">${charSvg}</div>
+        <div class="vc-avatar" id="vc_avatar_click" title="${escapeHtml(p.name)} — maturity ${maturity.toFixed(1)}%">${centerHtml}</div>
       </div>
       <div class="vc-name">${escapeHtml(p.name)}<span class="sub">${language} voice model · maturity ${maturity.toFixed(1)}%</span></div>
+      <div class="row" style="gap:8px; margin-top: 4px;">
+        <label class="btn secondary" style="cursor:pointer; font-size:11px; padding:6px 12px;">
+          ${p.has_avatar ? '🖼 Change avatar' : '🖼 Upload avatar (donghua / anime / photo)'}
+          <input type="file" id="vc_avatar_upload" accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml" style="display:none;"/>
+        </label>
+        ${p.has_avatar ? '<button class="btn secondary" id="vc_avatar_clear" type="button" style="font-size:11px; padding:6px 12px;">Reset to anime SVG</button>' : ''}
+        <span class="muted" id="vc_avatar_status" style="font-size:11px;"></span>
+      </div>
     </div>`;
+
+  // Wire upload + reset
+  const inp = document.getElementById('vc_avatar_upload');
+  if (inp) inp.onchange = async () => {
+    const f = inp.files[0];
+    if (!f) return;
+    const fd = new FormData();
+    fd.append('file', f);
+    const status = document.getElementById('vc_avatar_status');
+    status.textContent = 'uploading…';
+    try {
+      const r = await fetch(`/api/projects/${encodeURIComponent(p.name)}/avatar`, { method: 'POST', body: fd });
+      if (!r.ok) {
+        const detail = (await r.json()).detail || r.statusText;
+        status.innerHTML = `<span style="color:var(--danger)">${escapeHtml(detail)}</span>`;
+        return;
+      }
+      status.innerHTML = '<span style="color:var(--ok)">avatar saved</span>';
+      AVATAR_BUST[p.name] = Date.now();   // force browser to re-fetch
+      await refreshDetail();
+      await refreshProjects();
+    } catch (e) {
+      status.innerHTML = `<span style="color:var(--danger)">${escapeHtml(e.message)}</span>`;
+    }
+  };
+  const clr = document.getElementById('vc_avatar_clear');
+  if (clr) clr.onclick = async () => {
+    if (!confirm('Reset to procedural anime character?')) return;
+    await fetch(`/api/projects/${encodeURIComponent(p.name)}/avatar`, { method: 'DELETE' });
+    AVATAR_BUST[p.name] = Date.now();
+    await refreshDetail();
+    await refreshProjects();
+  };
 }
 
 async function selectProject(name) {
