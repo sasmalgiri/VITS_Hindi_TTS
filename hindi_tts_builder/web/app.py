@@ -162,53 +162,96 @@ def create_app(projects_root: Path):
         ok = registry.stop(name)
         return {"signalled": ok}
 
+    _AVATAR_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg")
+    _AVATAR_MEDIA = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+                     "webp": "image/webp", "gif": "image/gif", "svg": "image/svg+xml"}
+
+    def _avatar_dir(proj_dir: Path) -> Path:
+        return proj_dir / "avatars"
+
+    def _list_avatars(proj_dir: Path) -> list:
+        """Return sorted list of avatar files in the project's avatars/ dir."""
+        d = _avatar_dir(proj_dir)
+        if not d.exists():
+            return []
+        return sorted(p for p in d.iterdir()
+                      if p.is_file() and p.suffix.lower() in _AVATAR_EXTS)
+
     @app.post("/api/projects/{name}/avatar")
-    async def upload_avatar(name: str, file: UploadFile = File(...)):
-        """Upload a custom avatar image for a project. Stored at
-        projects/<name>/avatar.<ext>; served via /api/projects/<name>/avatar.
-        Lets the user drop in a donghua/anime portrait they generated
-        elsewhere instead of relying on the procedural SVG character.
+    async def upload_avatars(name: str, files: list[UploadFile] = File(...)):
+        """Upload one or more avatar images. Stored as
+        projects/<name>/avatars/avatar_00.<ext> ... avatar_NN.<ext> in upload
+        order. Multiple images become "maturity stages" — the voice card
+        shows image N where N = floor(maturity * len/100). Single upload
+        works the same way (acts as both first and only stage).
+
+        Replaces any previously uploaded avatars.
         """
         proj_dir = projects_root / name
         if not (proj_dir / "config.yaml").exists():
             raise HTTPException(404, f"no project '{name}'")
-        if not file.filename:
-            raise HTTPException(400, "no filename")
-        # Accept common image types only
-        allowed = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg"}
-        ext = Path(file.filename).suffix.lower()
-        if ext not in allowed:
-            raise HTTPException(400, f"unsupported image type {ext!r}; use png/jpg/webp/gif/svg")
-        # Wipe any prior avatar with a different extension
-        for old in proj_dir.glob("avatar.*"):
-            try: old.unlink()
+        if not files:
+            raise HTTPException(400, "no files in upload")
+        # Validate all extensions before we wipe the old ones
+        for f in files:
+            ext = Path(f.filename or "").suffix.lower()
+            if ext not in _AVATAR_EXTS:
+                raise HTTPException(400, f"unsupported image type {ext!r} for {f.filename!r}; use png/jpg/webp/gif/svg")
+        # Reset existing avatars (both the new dir and any legacy avatar.*)
+        adir = _avatar_dir(proj_dir)
+        if adir.exists():
+            for old in adir.iterdir():
+                try: old.unlink()
+                except OSError: pass
+        for legacy in proj_dir.glob("avatar.*"):
+            try: legacy.unlink()
             except OSError: pass
-        target = proj_dir / f"avatar{ext}"
-        data = await file.read()
-        if len(data) > 8 * 1024 * 1024:
-            raise HTTPException(400, "avatar must be < 8 MiB")
-        target.write_bytes(data)
-        return {"name": name, "avatar_path": f"avatar{ext}", "bytes": len(data)}
+        adir.mkdir(parents=True, exist_ok=True)
+        # Save each
+        saved = []
+        for i, f in enumerate(files):
+            ext = Path(f.filename or "").suffix.lower()
+            data = await f.read()
+            if len(data) > 8 * 1024 * 1024:
+                raise HTTPException(400, f"{f.filename!r} > 8 MiB")
+            target = adir / f"avatar_{i:02d}{ext}"
+            target.write_bytes(data)
+            saved.append({"index": i, "filename": target.name, "bytes": len(data)})
+        return {"name": name, "count": len(saved), "stages": saved}
 
     @app.get("/api/projects/{name}/avatar")
-    def get_avatar(name: str):
-        """Return the project's uploaded avatar image, or 404 if none."""
+    def get_avatar(name: str, stage: int | None = None):
+        """Return the avatar image. With ?stage=N returns the N-th uploaded
+        image (clamped to the available range). Without it returns stage 0
+        (or the legacy single avatar if any). 404 if no avatar uploaded."""
         from fastapi.responses import FileResponse
         proj_dir = projects_root / name
-        for ext in (".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg"):
+        files = _list_avatars(proj_dir)
+        if files:
+            if stage is None:
+                stage = 0
+            stage = max(0, min(len(files) - 1, int(stage)))
+            p = files[stage]
+            media = _AVATAR_MEDIA[p.suffix.lstrip(".").lower()]
+            return FileResponse(p, media_type=media)
+        # Legacy single-file fallback
+        for ext in _AVATAR_EXTS:
             p = proj_dir / f"avatar{ext}"
             if p.exists():
-                media = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
-                         "webp": "image/webp", "gif": "image/gif", "svg": "image/svg+xml"}[ext.lstrip(".")]
-                return FileResponse(p, media_type=media)
+                return FileResponse(p, media_type=_AVATAR_MEDIA[ext.lstrip(".")])
         raise HTTPException(404, "no avatar uploaded")
 
     @app.delete("/api/projects/{name}/avatar")
     def delete_avatar(name: str):
         proj_dir = projects_root / name
-        removed = False
-        for old in proj_dir.glob("avatar.*"):
-            try: old.unlink(); removed = True
+        removed = 0
+        adir = _avatar_dir(proj_dir)
+        if adir.exists():
+            for p in adir.iterdir():
+                try: p.unlink(); removed += 1
+                except OSError: pass
+        for legacy in proj_dir.glob("avatar.*"):
+            try: legacy.unlink(); removed += 1
             except OSError: pass
         return {"removed": removed}
 
@@ -315,8 +358,15 @@ def _project_summary(p: Path, registry: JobRegistry) -> dict:
             pass
 
     job = registry.get(p.name)
-    has_avatar = any((p / f"avatar{ext}").exists()
-                     for ext in (".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg"))
+    avatar_exts = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg")
+    avatars_dir = p / "avatars"
+    avatar_count = 0
+    if avatars_dir.exists():
+        avatar_count = sum(1 for f in avatars_dir.iterdir()
+                           if f.is_file() and f.suffix.lower() in avatar_exts)
+    if avatar_count == 0:
+        # Legacy single-file path
+        avatar_count = sum(1 for ext in avatar_exts if (p / f"avatar{ext}").exists())
     return {
         "name": p.name,
         "language": cfg.get("language"),
@@ -325,7 +375,8 @@ def _project_summary(p: Path, registry: JobRegistry) -> dict:
         "stage_counts": counts,
         "max_steps": max_steps,
         "engine_exported": (p / "engine" / "manifest.json").exists(),
-        "has_avatar": has_avatar,
+        "has_avatar": avatar_count > 0,
+        "avatar_count": avatar_count,
         "job": job.to_dict() if job else None,
     }
 
