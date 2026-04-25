@@ -348,6 +348,17 @@ class Trainer:
             use_phonemes=False,
             text_cleaner=None,            # our frontend handled cleaning already
             enable_eos_bos_chars=True,
+            # Disable Coqui's Stochastic Duration Predictor (SDP) — its piecewise
+            # rational-quadratic spline transform crashes intermittently on
+            # certain batches:
+            #   RuntimeError: min(): Expected reduction dim to be specified
+            #   for input.numel() == 0
+            # Recurred at step ~5400 and again at ~12250 in h_tts_1 v2.
+            # Use_sdp=False switches to deterministic Duration Predictor (DDP)
+            # which is rock-stable. Slightly less natural prosody on ambitious
+            # phrasing, but a model that finishes training trumps one that
+            # crashes mid-run.
+            use_sdp=False,
         )
 
         # Find latest checkpoint for resumption
