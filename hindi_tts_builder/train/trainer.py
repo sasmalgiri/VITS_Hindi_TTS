@@ -42,7 +42,7 @@ def _try_import_coqui():
     try:
         from TTS.tts.configs.vits_config import VitsConfig  # type: ignore
         from TTS.tts.configs.shared_configs import CharactersConfig  # type: ignore
-        from TTS.tts.models.vits import Vits, VitsAudioConfig  # type: ignore
+        from TTS.tts.models.vits import Vits, VitsAudioConfig, VitsArgs  # type: ignore
         from TTS.config.shared_configs import BaseDatasetConfig  # type: ignore
         from TTS.tts.datasets import load_tts_samples  # type: ignore
         from TTS.utils.audio import AudioProcessor  # type: ignore
@@ -50,6 +50,7 @@ def _try_import_coqui():
         return {
             "VitsConfig": VitsConfig,
             "VitsAudioConfig": VitsAudioConfig,
+            "VitsArgs": VitsArgs,
             "CharactersConfig": CharactersConfig,
             "BaseDatasetConfig": BaseDatasetConfig,
             "load_tts_samples": load_tts_samples,
@@ -358,7 +359,10 @@ class Trainer:
             # which is rock-stable. Slightly less natural prosody on ambitious
             # phrasing, but a model that finishes training trumps one that
             # crashes mid-run.
-            use_sdp=False,
+            #
+            # use_sdp lives on VitsArgs (model_args), not the top-level config,
+            # so we instantiate VitsArgs and pass it explicitly.
+            model_args=coqui["VitsArgs"](use_sdp=False),
         )
 
         # Find latest checkpoint for resumption
