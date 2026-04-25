@@ -137,15 +137,18 @@
   .vc-orbit { position: relative; width: 280px; height: 280px; flex-shrink: 0; }
   .vc-avatar {
     position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-    width: 110px; height: 110px;
-    background: linear-gradient(135deg, var(--accent) 0%, var(--accent-2) 100%);
+    width: 150px; height: 150px;
     border-radius: 50%;
-    display: flex; align-items: center; justify-content: center;
-    font-size: 60px;
-    box-shadow: 0 0 30px rgba(79, 140, 255, 0.35), inset 0 0 25px rgba(255,255,255,0.1);
     cursor: pointer;
+    transition: transform 0.2s, filter 0.4s;
+    filter: drop-shadow(0 0 18px rgba(79,140,255,0.45));
   }
-  .vc-avatar:hover { transform: translate(-50%, -50%) scale(1.06); transition: transform 0.2s; }
+  .vc-avatar:hover { transform: translate(-50%, -50%) scale(1.06); }
+  .vc-avatar svg { width: 100%; height: 100%; display: block; }
+  .vc-avatar .glow-ring { animation: glow-pulse 3s ease-in-out infinite; }
+  @keyframes glow-pulse { 0%,100% { opacity: 0.5; } 50% { opacity: 1; } }
+  .vc-avatar .float-prop { animation: prop-float 4s ease-in-out infinite; transform-origin: center; }
+  @keyframes prop-float { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-3px); } }
   .vc-ring {
     position: absolute; top: 50%; left: 50%;
     width: 230px; height: 230px;
@@ -310,14 +313,151 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 }
 
-// Pick an avatar emoji per project. Deterministic from the name so the
-// same project always shows the same face. Replace with a per-project
-// "voice gender" config field later if you want explicit control.
+// Pick an avatar emoji per project (used for the small gallery tiles).
 function avatarFor(name) {
-  const opts = ['👨‍🎤', '👨', '🧔', '👨‍🏫', '👨‍💻'];   // default male voices for now
+  const opts = ['👨‍🎤', '👨', '🧔', '👨‍🏫', '👨‍💻'];
   let h = 0;
   for (const c of name) h = ((h << 5) - h + c.charCodeAt(0)) | 0;
   return opts[Math.abs(h) % opts.length];
+}
+
+// Render a procedurally-drawn SVG character whose detail + props grow with
+// model maturity. Layers fade in at thresholds so the character literally
+// "matures" as training progresses.
+//   maturity:  0..100 (composite from step + loss progress)
+//   bestsSeen: number of BEST val checkpoints — drives glow intensity
+//   training:  bool   — adds animated sound-wave near the mic
+function renderCharacterSVG({ maturity = 0, bestsSeen = 0, training = false } = {}) {
+  // Pull out feature thresholds. Each layer has an opacity that ramps in
+  // around its threshold so transitions feel smooth instead of popping.
+  const ramp = (m, lo, hi) => Math.max(0, Math.min(1, (m - lo) / (hi - lo)));
+  const baseOp     = ramp(maturity,  0,  10);   // silhouette
+  const faceOp     = ramp(maturity,  8,  22);   // eyes, mouth
+  const hairOp     = ramp(maturity, 20,  35);   // hair on top
+  const bodyOp     = ramp(maturity, 30,  45);   // shoulders / shirt
+  const hphOp      = ramp(maturity, 45,  60);   // headphones (audio learned)
+  const micOp      = ramp(maturity, 60,  75);   // microphone in hand
+  const notesOp    = ramp(maturity, 75,  88);   // music notes orbit
+  const auraOp     = ramp(maturity, 85, 100);   // golden aura (mastered)
+  const colorOn    = ramp(maturity, 25,  60);   // greyscale → full color
+
+  // Color palette: shifts from desaturated to vibrant as model matures
+  const skin     = `rgb(${230 - 50*(1-colorOn) | 0}, ${190 - 30*(1-colorOn) | 0}, ${160 - 30*(1-colorOn) | 0})`;
+  const hair     = `rgb(${50 + 20*colorOn | 0},  ${30 + 10*colorOn | 0}, ${20 + 10*colorOn | 0})`;
+  const shirt    = `rgb(${60 + 60*colorOn | 0},  ${100 + 70*colorOn | 0}, ${200 + 30*colorOn | 0})`;
+  const headphone = '#222';
+  const mic      = '#333';
+  const accentG  = '#5fd97a';
+  const accentY  = '#f5c451';
+
+  // Glow tier scales with bestsSeen
+  const glowR = Math.min(80, 30 + bestsSeen * 2);
+
+  // Optional waveform near mic when actively training
+  const waveOp = training ? 0.85 : 0;
+
+  // Music notes orbit positions
+  const notes = [
+    { x: 30, y: 25, n: '♪' },
+    { x: 165, y: 35, n: '♫' },
+    { x: 175, y: 130, n: '♩' },
+    { x: 25, y: 140, n: '♬' },
+  ];
+
+  return `
+  <svg viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <radialGradient id="aura" cx="50%" cy="50%" r="50%">
+        <stop offset="0%" stop-color="#ffd866" stop-opacity="0.9"/>
+        <stop offset="60%" stop-color="#ffd866" stop-opacity="0.25"/>
+        <stop offset="100%" stop-color="#ffd866" stop-opacity="0"/>
+      </radialGradient>
+      <radialGradient id="bg" cx="50%" cy="40%" r="55%">
+        <stop offset="0%" stop-color="#243047"/>
+        <stop offset="100%" stop-color="#101620"/>
+      </radialGradient>
+      <filter id="soft" x="-30%" y="-30%" width="160%" height="160%">
+        <feGaussianBlur stdDeviation="1.2"/>
+      </filter>
+    </defs>
+
+    <!-- background disc -->
+    <circle cx="100" cy="100" r="98" fill="url(#bg)"/>
+
+    <!-- aura (only at high maturity) -->
+    <circle class="glow-ring" cx="100" cy="100" r="${glowR + 30}" fill="url(#aura)" opacity="${auraOp}"/>
+
+    <!-- shoulders / shirt (>30% maturity) -->
+    <path d="M 40 200 Q 100 150 160 200 Z" fill="${shirt}" opacity="${bodyOp}"/>
+    <path d="M 75 158 Q 100 175 125 158 L 125 200 L 75 200 Z" fill="${shirt}" opacity="${bodyOp}"/>
+
+    <!-- neck -->
+    <rect x="88" y="135" width="24" height="22" rx="3" fill="${skin}" opacity="${baseOp * 0.9}"/>
+
+    <!-- head silhouette (always, fades in) -->
+    <ellipse cx="100" cy="95" rx="44" ry="50" fill="${skin}" opacity="${baseOp}"/>
+
+    <!-- hair (>20%) -->
+    <path d="M 60 80 Q 60 50 100 45 Q 140 50 140 82 Q 130 60 100 60 Q 70 60 60 80 Z"
+          fill="${hair}" opacity="${hairOp}"/>
+    <path d="M 60 80 Q 70 70 100 70 Q 130 70 140 80 L 140 95 Q 100 78 60 95 Z"
+          fill="${hair}" opacity="${hairOp * 0.8}"/>
+
+    <!-- eyebrows (>15%) -->
+    <path d="M 73 90 Q 82 86 91 90" stroke="${hair}" stroke-width="2.5" fill="none" opacity="${faceOp}"/>
+    <path d="M 109 90 Q 118 86 127 90" stroke="${hair}" stroke-width="2.5" fill="none" opacity="${faceOp}"/>
+
+    <!-- eyes (>10%) -->
+    <ellipse cx="82" cy="100" rx="4" ry="${5 * faceOp}" fill="#1a1a1a" opacity="${faceOp}"/>
+    <ellipse cx="118" cy="100" rx="4" ry="${5 * faceOp}" fill="#1a1a1a" opacity="${faceOp}"/>
+    <!-- catchlights (>40%) -->
+    <circle cx="83" cy="98" r="1.2" fill="white" opacity="${ramp(maturity, 35, 55)}"/>
+    <circle cx="119" cy="98" r="1.2" fill="white" opacity="${ramp(maturity, 35, 55)}"/>
+
+    <!-- nose -->
+    <path d="M 100 102 Q 96 115 100 120 Q 104 117 102 113" stroke="${hair}" stroke-width="1" fill="none" opacity="${faceOp * 0.7}"/>
+
+    <!-- mouth — frown at low maturity, smile at high -->
+    <path d="M 88 124 Q 100 ${124 + 8 * (maturity / 100)} 112 124"
+          stroke="#7a3d3d" stroke-width="2.2" fill="none" opacity="${faceOp}"/>
+
+    <!-- headphones (>45%) -->
+    <path d="M 50 95 Q 100 25 150 95" stroke="${headphone}" stroke-width="6" fill="none" opacity="${hphOp}"/>
+    <ellipse cx="50" cy="105" rx="11" ry="14" fill="${headphone}" opacity="${hphOp}"/>
+    <ellipse cx="150" cy="105" rx="11" ry="14" fill="${headphone}" opacity="${hphOp}"/>
+    <ellipse cx="50" cy="105" rx="6" ry="9" fill="${accentG}" opacity="${hphOp * 0.9}"/>
+    <ellipse cx="150" cy="105" rx="6" ry="9" fill="${accentG}" opacity="${hphOp * 0.9}"/>
+
+    <!-- microphone in hand (>60%) -->
+    <g class="float-prop" opacity="${micOp}">
+      <rect x="155" y="135" width="6" height="32" rx="2" fill="${mic}"/>
+      <ellipse cx="158" cy="130" rx="9" ry="13" fill="${mic}"/>
+      <ellipse cx="158" cy="130" rx="6" ry="10" fill="#555"/>
+      <line x1="155" y1="125" x2="161" y2="125" stroke="#888" stroke-width="0.8"/>
+      <line x1="155" y1="130" x2="161" y2="130" stroke="#888" stroke-width="0.8"/>
+      <line x1="155" y1="135" x2="161" y2="135" stroke="#888" stroke-width="0.8"/>
+      <!-- animated sound-wave bars near mic when actively training -->
+      <g opacity="${waveOp}">
+        <rect x="172" y="125" width="2" height="12" fill="${accentG}"><animate attributeName="height" values="6;14;6" dur="0.7s" repeatCount="indefinite"/><animate attributeName="y" values="129;123;129" dur="0.7s" repeatCount="indefinite"/></rect>
+        <rect x="178" y="120" width="2" height="20" fill="${accentG}"><animate attributeName="height" values="10;22;10" dur="0.7s" repeatCount="indefinite" begin="0.15s"/><animate attributeName="y" values="125;119;125" dur="0.7s" repeatCount="indefinite" begin="0.15s"/></rect>
+        <rect x="184" y="124" width="2" height="14" fill="${accentG}"><animate attributeName="height" values="8;16;8" dur="0.7s" repeatCount="indefinite" begin="0.3s"/><animate attributeName="y" values="128;122;128" dur="0.7s" repeatCount="indefinite" begin="0.3s"/></rect>
+      </g>
+    </g>
+
+    <!-- music notes orbit (>75%) -->
+    ${notes.map((n, i) => `
+      <text class="float-prop" x="${n.x}" y="${n.y}" font-size="14" fill="${accentY}" opacity="${notesOp}" style="animation-delay: ${i * 0.5}s">${n.n}</text>
+    `).join('')}
+
+    <!-- BEST count badge (only if any) -->
+    ${bestsSeen > 0 ? `
+      <g transform="translate(165, 165)">
+        <circle r="14" fill="${accentY}"/>
+        <text text-anchor="middle" y="4" font-size="13" font-weight="bold" fill="#1a1a1a">${bestsSeen}</text>
+        <text text-anchor="middle" y="-15" font-size="8" fill="#a99668">BEST</text>
+      </g>
+    ` : ''}
+  </svg>`;
 }
 
 async function refreshProjects() {
@@ -398,15 +538,38 @@ function renderVoiceCard(p) {
     return `<div class="vc-virtue${cls}" style="--angle: ${angle}deg;"><span class="ico">${v.ico}</span>${escapeHtml(v.text)}</div>`;
   }).join('');
 
-  const avatar = avatarFor(p.name);
+  // Compute the same maturity used by the dashboard so the character
+  // matures in lockstep with the bar above.
+  const target = progress.trainTarget || CURRENT_MAX_STEPS || 150000;
+  const stepPct = target ? Math.min(100, (progress.trainStep / target) * 100) : 0;
+  let lossSum = 0, lossCount = 0;
+  for (const key of ['mel', 'kl', 'gen', 'disc', 'feat', 'duration']) {
+    const l = lossState[key];
+    const t = LOSS_TARGETS[key];
+    if (!l) continue;
+    const span = l.first - t.target;
+    if (span <= 0) { lossSum += 100; lossCount++; continue; }
+    let pct = Math.max(0, Math.min(100, ((l.first - l.current) / span) * 100));
+    if (l.current < t.target) pct = 100;
+    lossSum += pct; lossCount++;
+  }
+  const lossPct = lossCount ? lossSum / lossCount : 0;
+  const maturity = 0.3 * stepPct + 0.7 * lossPct;
+
+  const charSvg = renderCharacterSVG({
+    maturity,
+    bestsSeen: progress.bestsSeen || 0,
+    training: !!p.job?.running,
+  });
+
   wrap.innerHTML = `
     <div class="voice-card">
       <div class="vc-orbit">
         <div class="vc-ring"></div>
         ${orbits}
-        <div class="vc-avatar" title="${escapeHtml(p.name)}">${avatar}</div>
+        <div class="vc-avatar" title="${escapeHtml(p.name)} — maturity ${maturity.toFixed(1)}%">${charSvg}</div>
       </div>
-      <div class="vc-name">${escapeHtml(p.name)}<span class="sub">${language} voice model</span></div>
+      <div class="vc-name">${escapeHtml(p.name)}<span class="sub">${language} voice model · maturity ${maturity.toFixed(1)}%</span></div>
     </div>`;
 }
 
