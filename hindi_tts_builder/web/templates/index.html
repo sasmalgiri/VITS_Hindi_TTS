@@ -341,14 +341,19 @@ function renderCharacterSVG({ maturity = 0, bestsSeen = 0, training = false } = 
   const auraOp     = ramp(maturity, 85, 100);   // golden aura (mastered)
   const colorOn    = ramp(maturity, 25,  60);   // greyscale → full color
 
-  // Color palette: shifts from desaturated to vibrant as model matures
-  const skin     = `rgb(${230 - 50*(1-colorOn) | 0}, ${190 - 30*(1-colorOn) | 0}, ${160 - 30*(1-colorOn) | 0})`;
-  const hair     = `rgb(${50 + 20*colorOn | 0},  ${30 + 10*colorOn | 0}, ${20 + 10*colorOn | 0})`;
-  const shirt    = `rgb(${60 + 60*colorOn | 0},  ${100 + 70*colorOn | 0}, ${200 + 30*colorOn | 0})`;
-  const headphone = '#222';
-  const mic      = '#333';
+  // Anime-style palette: bright, saturated, slightly cool. Desaturated at
+  // low maturity, full vibrant by ~60%.
+  const skin     = `rgb(${250 - 30*(1-colorOn) | 0}, ${224 - 30*(1-colorOn) | 0}, ${200 - 30*(1-colorOn) | 0})`;
+  const hair     = `rgb(${30 + 10*colorOn | 0}, ${40 + 70*colorOn | 0}, ${110 + 100*colorOn | 0})`;  // anime navy → electric blue
+  const hairHi   = `rgb(${100 + 100*colorOn | 0}, ${160 + 80*colorOn | 0}, ${255 | 0})`;             // hair highlight strand
+  const shirt    = `rgb(${30 + 40*colorOn | 0}, ${30 + 40*colorOn | 0}, ${50 + 30*colorOn | 0})`;    // dark anime jacket
+  const collar   = `rgb(${200 + 40*colorOn | 0}, ${60 + 60*colorOn | 0}, ${100 + 60*colorOn | 0})`;  // accent stripe
+  const eyeColor = `rgb(${80 + 40*colorOn | 0}, ${100 + 110*colorOn | 0}, ${200 + 50*colorOn | 0})`; // bright blue irises
+  const headphone = '#1a1a1a';
+  const mic      = '#262626';
   const accentG  = '#5fd97a';
-  const accentY  = '#f5c451';
+  const accentY  = '#ffd866';
+  const blush    = `rgba(255, 140, 160, ${0.55 * colorOn})`;
 
   // Glow tier scales with bestsSeen
   const glowR = Math.min(80, 30 + bestsSeen * 2);
@@ -387,39 +392,60 @@ function renderCharacterSVG({ maturity = 0, bestsSeen = 0, training = false } = 
     <!-- aura (only at high maturity) -->
     <circle class="glow-ring" cx="100" cy="100" r="${glowR + 30}" fill="url(#aura)" opacity="${auraOp}"/>
 
-    <!-- shoulders / shirt (>30% maturity) -->
-    <path d="M 40 200 Q 100 150 160 200 Z" fill="${shirt}" opacity="${bodyOp}"/>
+    <!-- shoulders / anime jacket (>30% maturity) -->
+    <path d="M 40 200 Q 100 148 160 200 Z" fill="${shirt}" opacity="${bodyOp}"/>
     <path d="M 75 158 Q 100 175 125 158 L 125 200 L 75 200 Z" fill="${shirt}" opacity="${bodyOp}"/>
+    <!-- collar accent stripe -->
+    <path d="M 78 162 Q 100 178 122 162 L 122 168 Q 100 182 78 168 Z"
+          fill="${collar}" opacity="${bodyOp * 0.95}"/>
 
     <!-- neck -->
-    <rect x="88" y="135" width="24" height="22" rx="3" fill="${skin}" opacity="${baseOp * 0.9}"/>
+    <rect x="89" y="138" width="22" height="20" rx="3" fill="${skin}" opacity="${baseOp * 0.9}"/>
 
-    <!-- head silhouette (always, fades in) -->
-    <ellipse cx="100" cy="95" rx="44" ry="50" fill="${skin}" opacity="${baseOp}"/>
+    <!-- head with anime-pointed chin: rounded top, narrower jaw -->
+    <path d="M 56 90 Q 58 50 100 47 Q 142 50 144 90 Q 142 118 122 138 Q 100 152 78 138 Q 58 118 56 90 Z"
+          fill="${skin}" opacity="${baseOp}"/>
 
-    <!-- hair (>20%) -->
-    <path d="M 60 80 Q 60 50 100 45 Q 140 50 140 82 Q 130 60 100 60 Q 70 60 60 80 Z"
+    <!-- spiky anime hair (>20%) — multiple peaked strands -->
+    <path d="M 56 92 Q 50 60 75 50 Q 80 38 100 42 Q 122 38 128 52 Q 150 60 144 92
+             Q 138 70 128 65 Q 124 78 116 60 Q 108 75 100 55 Q 92 75 84 60 Q 76 78 72 65 Q 62 70 56 92 Z"
           fill="${hair}" opacity="${hairOp}"/>
-    <path d="M 60 80 Q 70 70 100 70 Q 130 70 140 80 L 140 95 Q 100 78 60 95 Z"
-          fill="${hair}" opacity="${hairOp * 0.8}"/>
+    <!-- main spike on the side -->
+    <path d="M 62 80 Q 50 60 60 45 Q 70 55 75 75 Z" fill="${hair}" opacity="${hairOp}"/>
+    <path d="M 138 80 Q 150 60 142 45 Q 132 55 128 75 Z" fill="${hair}" opacity="${hairOp}"/>
+    <!-- electric-blue highlight strand -->
+    <path d="M 88 55 Q 92 48 100 50 Q 108 48 112 55 Q 105 70 100 60 Q 95 70 88 55 Z"
+          fill="${hairHi}" opacity="${hairOp * 0.9}"/>
 
-    <!-- eyebrows (>15%) -->
-    <path d="M 73 90 Q 82 86 91 90" stroke="${hair}" stroke-width="2.5" fill="none" opacity="${faceOp}"/>
-    <path d="M 109 90 Q 118 86 127 90" stroke="${hair}" stroke-width="2.5" fill="none" opacity="${faceOp}"/>
+    <!-- thin angular eyebrows -->
+    <path d="M 70 88 L 90 86" stroke="${hair}" stroke-width="3" stroke-linecap="round" fill="none" opacity="${faceOp}"/>
+    <path d="M 110 86 L 130 88" stroke="${hair}" stroke-width="3" stroke-linecap="round" fill="none" opacity="${faceOp}"/>
 
-    <!-- eyes (>10%) -->
-    <ellipse cx="82" cy="100" rx="4" ry="${5 * faceOp}" fill="#1a1a1a" opacity="${faceOp}"/>
-    <ellipse cx="118" cy="100" rx="4" ry="${5 * faceOp}" fill="#1a1a1a" opacity="${faceOp}"/>
-    <!-- catchlights (>40%) -->
-    <circle cx="83" cy="98" r="1.2" fill="white" opacity="${ramp(maturity, 35, 55)}"/>
-    <circle cx="119" cy="98" r="1.2" fill="white" opacity="${ramp(maturity, 35, 55)}"/>
+    <!-- BIG anime eyes — large irises with sparkles -->
+    <!-- left eye -->
+    <ellipse cx="80" cy="105" rx="11" ry="${13 * faceOp}" fill="white" opacity="${faceOp}"/>
+    <ellipse cx="80" cy="106" rx="8" ry="${10 * faceOp}" fill="${eyeColor}" opacity="${faceOp}"/>
+    <ellipse cx="80" cy="107" rx="4" ry="${5 * faceOp}" fill="#0a1530" opacity="${faceOp}"/>
+    <!-- sparkle highlights (>40%) -->
+    <ellipse cx="83" cy="101" rx="2.5" ry="3" fill="white" opacity="${ramp(maturity, 35, 55)}"/>
+    <ellipse cx="77" cy="110" rx="1.4" ry="1.6" fill="white" opacity="${ramp(maturity, 40, 60)}"/>
+    <!-- right eye -->
+    <ellipse cx="120" cy="105" rx="11" ry="${13 * faceOp}" fill="white" opacity="${faceOp}"/>
+    <ellipse cx="120" cy="106" rx="8" ry="${10 * faceOp}" fill="${eyeColor}" opacity="${faceOp}"/>
+    <ellipse cx="120" cy="107" rx="4" ry="${5 * faceOp}" fill="#0a1530" opacity="${faceOp}"/>
+    <ellipse cx="123" cy="101" rx="2.5" ry="3" fill="white" opacity="${ramp(maturity, 35, 55)}"/>
+    <ellipse cx="117" cy="110" rx="1.4" ry="1.6" fill="white" opacity="${ramp(maturity, 40, 60)}"/>
 
-    <!-- nose -->
-    <path d="M 100 102 Q 96 115 100 120 Q 104 117 102 113" stroke="${hair}" stroke-width="1" fill="none" opacity="${faceOp * 0.7}"/>
+    <!-- subtle nose hint -->
+    <path d="M 100 117 Q 98 122 101 124" stroke="${hair}" stroke-width="0.8" fill="none" opacity="${faceOp * 0.5}"/>
 
-    <!-- mouth — frown at low maturity, smile at high -->
-    <path d="M 88 124 Q 100 ${124 + 8 * (maturity / 100)} 112 124"
-          stroke="#7a3d3d" stroke-width="2.2" fill="none" opacity="${faceOp}"/>
+    <!-- small anime mouth — line at low maturity, smile at high -->
+    <path d="M 94 ${130} Q 100 ${130 + 5 * (maturity / 100)} 106 ${130}"
+          stroke="#9c4848" stroke-width="1.8" fill="none" stroke-linecap="round" opacity="${faceOp}"/>
+
+    <!-- blush patches (>50%) -->
+    <ellipse cx="72" cy="120" rx="7" ry="3.5" fill="${blush}" opacity="${ramp(maturity, 45, 65)}"/>
+    <ellipse cx="128" cy="120" rx="7" ry="3.5" fill="${blush}" opacity="${ramp(maturity, 45, 65)}"/>
 
     <!-- headphones (>45%) -->
     <path d="M 50 95 Q 100 25 150 95" stroke="${headphone}" stroke-width="6" fill="none" opacity="${hphOp}"/>
