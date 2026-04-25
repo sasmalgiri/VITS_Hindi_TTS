@@ -131,6 +131,62 @@
   .model-stat { background: #11151c; border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; }
   .model-stat .v { font-size: 16px; font-weight: 700; font-family: var(--mono); color: var(--text); }
   .model-stat .k { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.4px; margin-top: 2px; }
+
+  /* Voice card with orbiting virtues */
+  .voice-card { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 16px 0 8px; margin-bottom: 8px; border-bottom: 1px solid var(--border); }
+  .vc-orbit { position: relative; width: 280px; height: 280px; flex-shrink: 0; }
+  .vc-avatar {
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    width: 110px; height: 110px;
+    background: linear-gradient(135deg, var(--accent) 0%, var(--accent-2) 100%);
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 60px;
+    box-shadow: 0 0 30px rgba(79, 140, 255, 0.35), inset 0 0 25px rgba(255,255,255,0.1);
+    cursor: pointer;
+  }
+  .vc-avatar:hover { transform: translate(-50%, -50%) scale(1.06); transition: transform 0.2s; }
+  .vc-ring {
+    position: absolute; top: 50%; left: 50%;
+    width: 230px; height: 230px;
+    transform: translate(-50%, -50%);
+    border: 1px dashed rgba(138, 147, 166, 0.25);
+    border-radius: 50%;
+    pointer-events: none;
+  }
+  .vc-virtue {
+    position: absolute; top: 50%; left: 50%;
+    transform: translate(-50%, -50%) rotate(var(--angle)) translateY(-115px) rotate(calc(-1 * var(--angle)));
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 999px; padding: 5px 11px;
+    font-size: 11px; font-family: var(--mono); white-space: nowrap;
+    color: var(--text);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+  }
+  .vc-virtue.good { border-color: var(--ok); color: var(--ok); }
+  .vc-virtue.warn { border-color: var(--warn); color: var(--warn); }
+  .vc-virtue.run  { border-color: var(--accent); color: var(--accent); }
+  .vc-virtue .ico { margin-right: 4px; }
+  .vc-name { font-size: 18px; font-weight: 700; }
+  .vc-name .sub { color: var(--muted); font-size: 12px; font-weight: 400; margin-left: 8px; }
+
+  /* Visual project tiles in the gallery */
+  .proj-tile { display: grid; grid-template-columns: 56px 1fr auto; gap: 12px; align-items: center; padding: 10px; border-radius: 8px; cursor: pointer; border: 1px solid transparent; margin-bottom: 4px; }
+  .proj-tile:hover { background: #1c2230; border-color: var(--border); }
+  .proj-tile.selected { background: #1c2230; border-color: var(--accent); }
+  .proj-avatar {
+    width: 56px; height: 56px;
+    background: linear-gradient(135deg, var(--accent) 0%, var(--accent-2) 100%);
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 28px;
+    box-shadow: 0 0 15px rgba(79, 140, 255, 0.25);
+  }
+  .proj-info .pn { font-size: 14px; font-weight: 600; color: var(--text); }
+  .proj-info .pchips { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 4px; }
+  .pchip { background: #11151c; border: 1px solid var(--border); border-radius: 999px; padding: 2px 8px; font-size: 10px; color: var(--muted); font-family: var(--mono); }
+  .pchip.ok { color: var(--ok); border-color: rgba(95, 217, 122, 0.4); }
+  .pchip.run { color: var(--accent); border-color: rgba(79, 140, 255, 0.4); }
 </style>
 </head>
 <body>
@@ -161,7 +217,8 @@
     </div>
     <div id="create_msg"></div>
 
-    <h2 style="margin-top: 22px;">Existing projects</h2>
+    <h2 style="margin-top: 22px;">🎭 Voice gallery</h2>
+    <div class="muted" style="font-size: 12px; margin-bottom: 6px;">Click any voice to open its model card on the right.</div>
     <div id="projects_list" class="muted">Loading…</div>
   </section>
 
@@ -170,6 +227,8 @@
     <h2>2. Run training <span id="selected_pill" class="pill idle" style="margin-left:6px;">no project selected</span></h2>
 
     <div id="detail" class="muted">Select a project on the left or create one above.</div>
+
+    <div id="voice_card_wrap" style="display:none;"></div>
 
     <div id="controls" style="display:none;">
       <div class="checks">
@@ -222,6 +281,7 @@
 const $ = (id) => document.getElementById(id);
 let SELECTED = null;
 let LOG_ES = null;
+let LAST_PROJECT_DATA = null;   // cached for the voice-card live refresh
 
 async function api(path, opts = {}) {
   const res = await fetch(path, opts);
@@ -250,21 +310,44 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 }
 
+// Pick an avatar emoji per project. Deterministic from the name so the
+// same project always shows the same face. Replace with a per-project
+// "voice gender" config field later if you want explicit control.
+function avatarFor(name) {
+  const opts = ['👨‍🎤', '👨', '🧔', '👨‍🏫', '👨‍💻'];   // default male voices for now
+  let h = 0;
+  for (const c of name) h = ((h << 5) - h + c.charCodeAt(0)) | 0;
+  return opts[Math.abs(h) % opts.length];
+}
+
 async function refreshProjects() {
   try {
     const data = await api('/api/projects');
     const list = $('projects_list');
     if (!data.projects.length) {
-      list.innerHTML = '<div class="muted">No projects yet. Create one above.</div>';
+      list.innerHTML = '<div class="muted">No voices yet. Create one above.</div>';
       return;
     }
     list.innerHTML = '';
     for (const p of data.projects) {
       const div = document.createElement('div');
-      div.className = 'proj' + (SELECTED === p.name ? ' selected' : '');
-      div.innerHTML = `<div><strong>${escapeHtml(p.name)}</strong>
-        <div class="muted">${p.sources_count} sources · ${p.stage_counts.qc_passed}/${p.sources_count} QC-passed
-        ${p.engine_exported ? '· <span class="pill ok">engine</span>' : ''}</div></div>
+      div.className = 'proj-tile' + (SELECTED === p.name ? ' selected' : '');
+      const avatar = avatarFor(p.name);
+      // Build chip strip: language, hours, qc status, engine flag, training state
+      const chips = [];
+      chips.push(`<span class="pchip">${p.language === 'hi' ? 'हिंदी' : (p.language || '?')}</span>`);
+      if (p.sources_count) {
+        const qcCls = (p.stage_counts.qc_passed === p.sources_count) ? 'ok' : '';
+        chips.push(`<span class="pchip ${qcCls}">${p.stage_counts.qc_passed}/${p.sources_count} QC</span>`);
+      }
+      if (p.engine_exported) chips.push('<span class="pchip ok">engine ✓</span>');
+      if (p.job?.running)    chips.push('<span class="pchip run">training</span>');
+      div.innerHTML = `
+        <div class="proj-avatar">${avatar}</div>
+        <div class="proj-info">
+          <div class="pn">${escapeHtml(p.name)}</div>
+          <div class="pchips">${chips.join('')}</div>
+        </div>
         <div>${fmt(p.job)}</div>`;
       div.onclick = () => selectProject(p.name);
       list.appendChild(div);
@@ -272,6 +355,59 @@ async function refreshProjects() {
   } catch (e) {
     $('projects_list').innerHTML = '<div class="err-banner">Could not load projects: ' + escapeHtml(e.message) + '</div>';
   }
+}
+
+// Build the orbital voice card for the selected project. Re-rendered any
+// time refreshDetail() runs OR a new log line updates the loss/maturity
+// state — keep it cheap.
+function renderVoiceCard(p) {
+  const wrap = $('voice_card_wrap');
+  if (!p) { wrap.style.display = 'none'; return; }
+  wrap.style.display = 'block';
+
+  // Compute virtues
+  const language = p.language === 'hi' ? 'हिंदी' : (p.language || '?');
+  const hours = p.dataset_hours ? p.dataset_hours.toFixed(1) + 'h' : '—';
+  const sources = `${p.sources_count} src`;
+  const qc = `${p.stage_counts.qc_passed}/${p.sources_count} QC`;
+  const params = modelStats.paramsFmt || '?';
+  const vocab = modelStats.numChars
+    ? modelStats.numChars + ' chars'
+    : (modelStats.vocabChars != null ? `${modelStats.vocabChars + modelStats.vocabPunct}` : '?');
+  const bests = (progress.bestsSeen || 0) + ' BEST';
+  const status = p.job?.running
+    ? (progress.trainStep ? `step ${progress.trainStep.toLocaleString()}` : 'training')
+    : (p.engine_exported ? 'engine ✓' : 'idle');
+  const statusCls = p.job?.running ? 'run' : (p.engine_exported ? 'good' : '');
+
+  // Orbiting virtues — 8 positions evenly spaced
+  const virtues = [
+    { ico: '🌐', text: language,            cls: 'good' },
+    { ico: '🎬', text: sources,             cls: '' },
+    { ico: '⏱',  text: hours,               cls: '' },
+    { ico: '✅', text: qc,                  cls: (p.stage_counts.qc_passed === p.sources_count ? 'good' : 'warn') },
+    { ico: '🧠', text: params,              cls: '' },
+    { ico: '🔤', text: vocab,               cls: '' },
+    { ico: '🏆', text: bests,               cls: progress.bestsSeen > 0 ? 'good' : '' },
+    { ico: '🟢', text: status,              cls: statusCls },
+  ];
+  const angleStep = 360 / virtues.length;
+  const orbits = virtues.map((v, i) => {
+    const angle = i * angleStep;
+    const cls = v.cls ? ' ' + v.cls : '';
+    return `<div class="vc-virtue${cls}" style="--angle: ${angle}deg;"><span class="ico">${v.ico}</span>${escapeHtml(v.text)}</div>`;
+  }).join('');
+
+  const avatar = avatarFor(p.name);
+  wrap.innerHTML = `
+    <div class="voice-card">
+      <div class="vc-orbit">
+        <div class="vc-ring"></div>
+        ${orbits}
+        <div class="vc-avatar" title="${escapeHtml(p.name)}">${avatar}</div>
+      </div>
+      <div class="vc-name">${escapeHtml(p.name)}<span class="sub">${language} voice model</span></div>
+    </div>`;
 }
 
 async function selectProject(name) {
@@ -299,6 +435,8 @@ async function refreshDetail() {
       </div>
       <div class="muted" style="margin-top:8px;">language: ${p.language || '?'} · sample_rate: ${p.sample_rate || '?'} Hz · max_steps: ${(p.max_steps || 0).toLocaleString()} · engine exported: ${p.engine_exported ? 'yes' : 'no'}</div>
     `;
+    renderVoiceCard(p);
+    LAST_PROJECT_DATA = p;
     if (p.job && p.job.running) {
       $('start_btn').disabled = true;
       $('stop_btn').style.display = 'inline-block';
@@ -653,6 +791,7 @@ setInterval(() => {
     renderStages();
     renderTrainBar(CURRENT_MAX_STEPS);
     renderMaturity();
+    if (LAST_PROJECT_DATA) renderVoiceCard(LAST_PROJECT_DATA);
   }
 }, 1000);
 // Render the empty stage strip on page load
