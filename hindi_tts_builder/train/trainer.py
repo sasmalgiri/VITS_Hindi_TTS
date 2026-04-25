@@ -75,7 +75,9 @@ _CHARS_FOR_COQUI = _CHARS_DEVANAGARI + _CHARS_DIGITS
 # Hindi danda U+0964 lives inside the Devanagari block above, so don't
 # also list it here — Coqui's CharactersConfig rejects duplicates with
 # "[!] There are duplicate characters in the character set. {'।'}".
-_PUNCT_FOR_COQUI = " !?,.-:;'\""
+# ₹ (U+20B9) added because the currency normalizer only catches ₹+digits
+# patterns; standalone ₹ slips through and pre-flight catches it.
+_PUNCT_FOR_COQUI = " !?,.-:;'\"₹"
 
 # Hindi sample sentences for Coqui's eval-time synthesis. Replaces the
 # default English "It took me quite a long time to develop a voice..."
