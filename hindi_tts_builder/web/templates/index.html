@@ -109,6 +109,28 @@
   .pair-row .rm { background: transparent; color: var(--muted); border: 1px solid var(--border); border-radius: 4px; cursor: pointer; width: 24px; height: 24px; line-height: 1; font-size: 14px; padding: 0; }
   .pair-row .rm:hover { color: var(--danger); border-color: var(--danger); }
   .pair-row .file-ok { color: var(--ok); font-size: 11px; }
+
+  /* Model maturity dashboard */
+  .maturity-panel { background: linear-gradient(135deg, rgba(45,212,191,0.10), rgba(79,140,255,0.10)); border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-top: 10px; }
+  .maturity-row { display: flex; align-items: baseline; gap: 14px; margin-bottom: 8px; }
+  .maturity-num { font-size: 28px; font-weight: 700; color: var(--accent-2); font-family: var(--mono); line-height: 1; }
+  .maturity-num .muted { font-size: 18px; color: var(--muted); margin-left: 2px; font-weight: 500; }
+  .maturity-meta { flex: 1; }
+  .maturity-label { font-size: 12px; text-transform: uppercase; letter-spacing: 0.4px; color: var(--text); font-weight: 600; }
+
+  .loss-grid { margin-top: 10px; background: #11151c; border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
+  .loss-grid h3 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px; color: var(--muted); font-weight: 600; margin: 0 0 6px 0; }
+  .loss-row { display: grid; grid-template-columns: 110px 70px 1fr 70px; gap: 10px; align-items: center; font-family: var(--mono); font-size: 11px; padding: 2px 0; }
+  .loss-row .lk { color: var(--muted); }
+  .loss-row .lv { color: var(--text); text-align: right; }
+  .loss-row .lt { color: var(--muted); text-align: right; font-size: 10px; }
+  .loss-row .lb { background: #0a0d12; border-radius: 3px; height: 8px; overflow: hidden; }
+  .loss-row .lb-fill { height: 100%; transition: width 0.5s ease; background: linear-gradient(90deg, var(--danger), var(--warn), var(--accent-2), var(--ok)); }
+
+  .model-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-top: 10px; }
+  .model-stat { background: #11151c; border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; }
+  .model-stat .v { font-size: 16px; font-weight: 700; font-family: var(--mono); color: var(--text); }
+  .model-stat .k { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.4px; margin-top: 2px; }
 </style>
 </head>
 <body>
@@ -171,6 +193,24 @@
         <div class="train-bar"><div class="fill" id="train_fill"></div></div>
         <div class="train-meta" id="train_meta"></div>
       </div>
+
+      <div class="maturity-panel" id="maturity_panel" style="display:none;">
+        <div class="maturity-row">
+          <div class="maturity-num"><span id="maturity_pct">0.0</span><span class="muted">%</span></div>
+          <div class="maturity-meta">
+            <div class="maturity-label">Model maturity</div>
+            <div class="muted" id="maturity_breakdown" style="font-size:11px; margin-top:2px;">composite of step % + loss convergence</div>
+          </div>
+        </div>
+        <div class="train-bar"><div class="fill" id="maturity_fill" style="background: linear-gradient(90deg, var(--accent-2), var(--accent));"></div></div>
+      </div>
+
+      <div class="loss-grid" id="loss_grid_wrap" style="display:none;">
+        <h3>Loss convergence (lower = closer to a good model)</h3>
+        <div id="loss_grid"></div>
+      </div>
+
+      <div class="model-stats" id="model_stats" style="display:none;"></div>
 
       <h2 style="margin-top: 18px;">Live log <span class="muted" id="log_meta"></span></h2>
       <div class="logs" id="logs">(no log yet — click "Start training")</div>
@@ -291,6 +331,12 @@ const RE_LOSS         = /\bloss\s*[:=]\s*([\d.]+(?:[eE][-+]?\d+)?)/i;
 // Per-stage counters (added in qc.py / segment.py)
 const RE_QC_PROG      = /\[qc\]\s+progress\s+(\d+)\/(\d+)\s+\(([\d.]+)%\).*?passed=(\d+).*?eta=(\d+)s/i;
 const RE_SEG_PROG     = /\[segment\]\s+(\S+):\s+(\d+)\/(\d+)\s+cues\s+processed.*?created=(\d+)\s+skipped=(\d+)\s+rejected=(\d+)/i;
+// Per-loss extractors (Coqui prints "loss_xxx: <value> (<running_avg>)")
+const RE_LOSS_NAMED   = /loss_(mel|kl|gen|disc|feat|duration):\s*([\d.]+)/g;
+const RE_GRAD_NORM    = /grad_norm_\d+:\s*tensor\(([\d.]+)/g;
+const RE_MODEL_PARAMS = /Model has (\d+) parameters/i;
+const RE_COQUI_CHARS  = /Coqui character set:\s+(\d+)\s+chars\s+\+\s+(\d+)\s+punctuations.*?HindiTokenizer has (\d+) tokens/i;
+const RE_NUM_CHARS    = /num_chars[:=]\s*(\d+)/i;
 
 let progress = {
   stageIdx: -1,        // -1 = idle, 0..5 = current stage
@@ -300,6 +346,28 @@ let progress = {
   stageStartedAt: null,
   // Per-stage live counters (within-stage progress)
   stageCounter: null,   // {done, total, pct, eta_s, extra}
+};
+
+// Per-loss state for the maturity dashboard. `target` = "well-trained" value
+// taken from typical converged VITS runs on similar data; loss progress is
+// linearly mapped from `first` (high) to `target` (low). Approximate, but
+// gives a useful "how close are we" signal for users.
+const LOSS_TARGETS = {
+  mel:      { target: 12.0, label: "mel (spectrogram match)" },
+  kl:       { target: 1.5,  label: "kl (latent regularization)" },
+  gen:      { target: 1.8,  label: "gen (generator adversarial)" },
+  disc:     { target: 2.4,  label: "disc (discriminator)" },
+  feat:     { target: 2.0,  label: "feat (feature match)" },
+  duration: { target: 1.0,  label: "duration predictor" },
+};
+let lossState = {};   // {mel: {first, current}, ...}
+let modelStats = {
+  params: null,           // 83046892
+  paramsFmt: null,        // "83 M"
+  vocabChars: null,       // CharactersConfig.characters length
+  vocabPunct: null,
+  hindiTokens: null,      // our HindiTokenizer vocab
+  numChars: null,         // Coqui's num_chars from train output
 };
 
 function renderStages() {
@@ -365,9 +433,81 @@ function renderTrainBar(maxSteps) {
 function resetProgress() {
   progress = { stageIdx: -1, done: new Set(), failed: false,
                trainStep: 0, trainTarget: null, lastLoss: null, lastEpoch: null,
-               stageStartedAt: null };
+               stageStartedAt: null, stageCounter: null };
+  lossState = {};
+  modelStats = { params: null, paramsFmt: null, vocabChars: null,
+                 vocabPunct: null, hindiTokens: null, numChars: null };
   renderStages();
   renderTrainBar();
+  renderMaturity();
+}
+
+function fmtBigNum(n) {
+  if (!n && n !== 0) return '?';
+  if (n >= 1e9) return (n / 1e9).toFixed(2) + ' B';
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + ' M';
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + ' K';
+  return n.toString();
+}
+
+function renderMaturity() {
+  // Show only once we're in the train stage AND have at least one loss reading
+  const hasLoss = Object.keys(lossState).length > 0;
+  if (!hasLoss && progress.stageIdx < 5) {
+    $('maturity_panel').style.display = 'none';
+    $('loss_grid_wrap').style.display = 'none';
+    $('model_stats').style.display = 'none';
+    return;
+  }
+  $('maturity_panel').style.display = 'block';
+  $('loss_grid_wrap').style.display = 'block';
+  $('model_stats').style.display = 'grid';
+
+  // Per-loss progress bars
+  const rows = [];
+  let lossSum = 0, lossCount = 0;
+  for (const key of ['mel', 'kl', 'gen', 'disc', 'feat', 'duration']) {
+    const l = lossState[key];
+    const t = LOSS_TARGETS[key];
+    if (!l) {
+      rows.push(`<div class="loss-row"><div class="lk">${t.label}</div><div class="lv">—</div><div class="lb"></div><div class="lt">→ ${t.target}</div></div>`);
+      continue;
+    }
+    // Linear progress from `first` (start) → `target` (well-trained).
+    const span = l.first - t.target;
+    let pct = span > 0 ? Math.max(0, Math.min(100, ((l.first - l.current) / span) * 100)) : 0;
+    if (l.current < t.target) pct = 100;
+    lossSum += pct; lossCount++;
+    rows.push(`<div class="loss-row">
+      <div class="lk">${t.label}</div>
+      <div class="lv">${l.current.toFixed(2)}</div>
+      <div class="lb"><div class="lb-fill" style="width:${pct.toFixed(1)}%"></div></div>
+      <div class="lt">→ ${t.target}</div>
+    </div>`);
+  }
+  $('loss_grid').innerHTML = rows.join('');
+
+  // Composite maturity = 30% step progress + 70% loss progress
+  const target = progress.trainTarget || CURRENT_MAX_STEPS || 150000;
+  const stepPct = target ? Math.min(100, (progress.trainStep / target) * 100) : 0;
+  const lossPct = lossCount ? lossSum / lossCount : 0;
+  const maturity = 0.3 * stepPct + 0.7 * lossPct;
+  $('maturity_pct').textContent = maturity.toFixed(1);
+  $('maturity_fill').style.width = maturity.toFixed(1) + '%';
+  $('maturity_breakdown').textContent =
+    `${stepPct.toFixed(1)}% step + ${lossPct.toFixed(1)}% loss-convergence (avg of ${lossCount} losses)`;
+
+  // Stat cards
+  const cards = [
+    { k: 'model params',     v: modelStats.paramsFmt || '?' },
+    { k: 'Coqui chars',      v: modelStats.numChars != null ? modelStats.numChars
+                                : (modelStats.vocabChars != null ? `${modelStats.vocabChars}+${modelStats.vocabPunct}` : '?') },
+    { k: 'HindiTokenizer',   v: modelStats.hindiTokens != null ? `${modelStats.hindiTokens} tok` : '?' },
+    { k: 'BEST checkpoints', v: progress.bestsSeen || 0 },
+  ];
+  $('model_stats').innerHTML = cards.map(c =>
+    `<div class="model-stat"><div class="v">${c.v}</div><div class="k">${c.k}</div></div>`
+  ).join('');
 }
 
 function consumeLogLine(line) {
@@ -439,6 +579,40 @@ function consumeLogLine(line) {
   if (m) {
     progress.lastLoss = parseFloat(m[1]);
   }
+
+  // BEST checkpoints — track count for the maturity card
+  if (/BEST MODEL/i.test(line)) {
+    progress.bestsSeen = (progress.bestsSeen || 0) + 1;
+  }
+
+  // Per-loss readings (mel, kl, gen, disc, feat, duration) — Coqui prints them
+  // every print_step. Track first-seen as the "starting point" for progress %.
+  let lm;
+  RE_LOSS_NAMED.lastIndex = 0;
+  while ((lm = RE_LOSS_NAMED.exec(line)) !== null) {
+    const key = lm[1].toLowerCase();
+    const val = parseFloat(lm[2]);
+    if (!Number.isFinite(val)) continue;
+    if (!lossState[key]) lossState[key] = { first: val, current: val };
+    else lossState[key].current = val;
+  }
+
+  // Model params + vocab info — printed once at training start
+  m = line.match(RE_MODEL_PARAMS);
+  if (m) {
+    modelStats.params = parseInt(m[1], 10);
+    modelStats.paramsFmt = fmtBigNum(modelStats.params);
+  }
+  m = line.match(RE_COQUI_CHARS);
+  if (m) {
+    modelStats.vocabChars = parseInt(m[1], 10);
+    modelStats.vocabPunct = parseInt(m[2], 10);
+    modelStats.hindiTokens = parseInt(m[3], 10);
+  }
+  m = line.match(RE_NUM_CHARS);
+  if (m && !modelStats.numChars) {
+    modelStats.numChars = parseInt(m[1], 10);
+  }
 }
 
 let CURRENT_MAX_STEPS = null;
@@ -463,6 +637,7 @@ function startLogStream(name) {
       $('logs').scrollTop = $('logs').scrollHeight;
       renderStages();
       renderTrainBar(CURRENT_MAX_STEPS);
+      renderMaturity();
     } catch {}
   };
   es.addEventListener('done', () => {
@@ -473,7 +648,13 @@ function startLogStream(name) {
 }
 
 // Refresh stage status timer (so "running 14s" updates without new log lines)
-setInterval(() => { if (progress.stageIdx >= 0 && !progress.failed) { renderStages(); renderTrainBar(CURRENT_MAX_STEPS); } }, 1000);
+setInterval(() => {
+  if (progress.stageIdx >= 0 && !progress.failed) {
+    renderStages();
+    renderTrainBar(CURRENT_MAX_STEPS);
+    renderMaturity();
+  }
+}, 1000);
 // Render the empty stage strip on page load
 renderStages();
 
