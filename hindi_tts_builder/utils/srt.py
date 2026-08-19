@@ -21,7 +21,9 @@ _TS_RE = re.compile(r"(\d{2}):(\d{2}):(\d{2})[,.](\d{3})")
 
 
 def _parse_ts(s: str) -> float:
-    m = _TS_RE.match(s.strip())
+    # fullmatch, not match: a malformed 4-digit millisecond field like
+    # "00:00:59,1000" would otherwise parse as 59.100 instead of being rejected.
+    m = _TS_RE.fullmatch(s.strip())
     if not m:
         raise ValueError(f"Bad SRT timestamp: {s}")
     h, mi, se, ms = map(int, m.groups())
@@ -29,10 +31,22 @@ def _parse_ts(s: str) -> float:
 
 
 def _fmt_ts(sec: float) -> str:
-    ms = int(round((sec - int(sec)) * 1000))
-    s = int(sec) % 60
-    m = (int(sec) // 60) % 60
-    h = int(sec) // 3600
+    """Format seconds as SRT time, carrying rounded milliseconds correctly.
+
+    Rounding the fractional part alone overflows: 59.9996 rounded to 1000 ms was
+    emitted as "00:00:59,1000" — a four-digit field that `_parse_ts` then read
+    back as 59.100, a silent 0.9s shift. Aligner and ASR output is unrounded, so
+    this was reachable on ordinary data, and segment.py re-parses these files to
+    decide where to cut audio.
+    """
+    if sec < 0:
+        sec = 0.0
+    total_ms = int(round(sec * 1000))
+    ms = total_ms % 1000
+    total_s = total_ms // 1000
+    s = total_s % 60
+    m = (total_s // 60) % 60
+    h = total_s // 3600
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 

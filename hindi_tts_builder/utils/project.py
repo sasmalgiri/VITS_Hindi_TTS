@@ -120,12 +120,48 @@ DEFAULT_CONFIG = {
 }
 
 
-def _deep_merge(base: dict, override: dict) -> dict:
-    """Recursively overlay `override` on a copy of `base`."""
+_TRUTHY = {"true", "yes", "on", "1"}
+_FALSEY = {"false", "no", "off", "0", ""}
+
+
+def _coerce(value, default):
+    """Make a YAML leaf match the type of its default, or raise.
+
+    YAML quoting turns `false` into the string "false", which is truthy — that
+    silently inverted a gate safety flag and let an unscored corpus through.
+    Types are checked here, once, rather than trusted at every use site.
+    """
+    if default is None or value is None:
+        return value
+    if isinstance(default, bool):
+        if isinstance(value, bool):
+            return value
+        t = str(value).strip().lower()
+        if t in _TRUTHY:
+            return True
+        if t in _FALSEY:
+            return False
+        raise ValueError(f"expected a boolean, got {value!r}")
+    if isinstance(default, (int, float)) and not isinstance(value, bool):
+        try:
+            return type(default)(value)
+        except (TypeError, ValueError):
+            raise ValueError(f"expected a number, got {value!r}")
+    return value
+
+
+def _deep_merge(base: dict, override: dict, *, path: str = "") -> dict:
+    """Recursively overlay `override` on a copy of `base`, coercing leaf types."""
     out = dict(base)
     for k, v in (override or {}).items():
+        where = f"{path}.{k}" if path else k
         if isinstance(v, dict) and isinstance(out.get(k), dict):
-            out[k] = _deep_merge(out[k], v)
+            out[k] = _deep_merge(out[k], v, path=where)
+        elif k in base:
+            try:
+                out[k] = _coerce(v, base[k])
+            except ValueError as e:
+                raise ValueError(f"config.yaml: {where}: {e}") from None
         else:
             out[k] = v
     return out
@@ -143,7 +179,10 @@ def load_config(project_root: Path) -> dict:
         raise FileNotFoundError(f"No config at {f}. Run `hindi-tts-builder new` first.")
     with open(f, encoding="utf-8") as fp:
         user = yaml.safe_load(fp) or {}
-    return _deep_merge(DEFAULT_CONFIG, user)
+    if not isinstance(user, dict):
+        raise ValueError(f"config.yaml must be a mapping, got {type(user).__name__}")
+    # deepcopy the base so a nested override can never mutate DEFAULT_CONFIG.
+    return _deep_merge(copy.deepcopy(DEFAULT_CONFIG), user)
 
 
 def save_config(project_root: Path, cfg: dict) -> None:

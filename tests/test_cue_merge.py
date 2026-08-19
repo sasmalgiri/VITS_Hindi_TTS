@@ -171,12 +171,13 @@ class TestShortFragments:
         assert units[0].text == "हाँ। फिर वह चला गया।"
         assert stats["attached_short"] == 1
 
-    def test_short_unit_dropped_when_gap_too_wide(self):
+    def test_short_unit_is_kept_not_deleted_when_gap_too_wide(self):
+        """A complete sentence must never be silently deleted for being short."""
         c = cues((0.0, 0.5, "हाँ।"), (9.0, 12.0, "फिर वह चला गया।"))
         units, stats = merge_cues_to_sentences(c, min_seconds=2.0, max_gap_seconds=0.4)
-        assert stats["dropped_short"] == 1
-        assert len(units) == 1
-        assert units[0].text == "फिर वह चला गया।"
+        assert stats.get("dropped_short", 0) == 0
+        assert len(units) == 2
+        assert " ".join(u.text for u in units) == "हाँ। फिर वह चला गया।"
 
 
 class TestLegacyAdapter:

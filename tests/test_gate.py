@@ -40,6 +40,19 @@ def make_project(tmp_path: Path, *, rows=None, qc_mode="full", n_repeat=500,
         (paths.training_set / "qc_report_meta.json").write_text(
             json.dumps({"qc_mode": qc_mode}), encoding="utf-8"
         )
+        # The sidecar is only a claim; read_qc_mode cross-checks it against the
+        # report, so the fixture must produce a report that actually matches.
+        with (paths.training_set / "qc_report.csv").open("w", encoding="utf-8", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["clip_id", "source_id", "duration", "snr_db", "silence_ratio",
+                        "whisper_cer", "passed", "reason", "qc_mode"])
+            for i in range(20):
+                if qc_mode == "skipped":
+                    w.writerow([f"c{i}", "s", "4.000", "", "", "", 1, "qc_skipped", "skipped"])
+                elif qc_mode == "no_whisper":
+                    w.writerow([f"c{i}", "s", "4.000", "31.20", "0.100", "", 1, "ok", "no_whisper"])
+                else:
+                    w.writerow([f"c{i}", "s", "4.000", "31.20", "0.100", "0.0400", 1, "ok", "full"])
 
     sources = manifest_sources if manifest_sources is not None else [
         {"id": "s", "url": "u", "status": {"downloaded": True, "segmented": True},

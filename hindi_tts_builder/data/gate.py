@@ -65,12 +65,17 @@ def read_qc_mode(paths: ProjectPaths) -> str:
     signature: a passthrough report has every row's reason set to ``qc_skipped``.
     Returns "full", "no_whisper", "skipped", or "missing".
     """
+    VALID = {"full", "no_whisper", "skipped", "missing"}
+
+    claimed = None
     meta = paths.training_set / QC_META_FILENAME
     if meta.exists():
         try:
-            return json.loads(meta.read_text(encoding="utf-8")).get("qc_mode", "missing")
+            v = json.loads(meta.read_text(encoding="utf-8")).get("qc_mode")
+            # Anything not in the known set is not a claim, it is corruption.
+            claimed = v if isinstance(v, str) and v in VALID else "missing"
         except Exception:
-            pass
+            claimed = "missing"
 
     report = paths.training_set / "qc_report.csv"
     if not report.exists():
@@ -78,15 +83,31 @@ def read_qc_mode(paths: ProjectPaths) -> str:
     with report.open(encoding="utf-8", newline="") as f:
         rows = list(csv.DictReader(f))
     if not rows:
-        return "missing"
-    if all((r.get("reason") or "") == "qc_skipped" for r in rows):
-        return "skipped"
-    # A report where no row carries an SNR reading never measured anything.
-    if all(not (r.get("snr_db") or "").strip() or r.get("snr_db") == "0.00" for r in rows):
-        return "skipped"
-    if all(not (r.get("whisper_cer") or "").strip() for r in rows):
-        return "no_whisper"
-    return "full"
+        return claimed or "missing"
+
+    n = len(rows)
+    def _frac(pred) -> float:
+        return sum(1 for r in rows if pred(r)) / n
+
+    # Proportional, not all(): a single genuinely-scored row among 10,279
+    # passthrough rows used to make the whole report read as "full".
+    scored_snr = _frac(lambda r: (r.get("snr_db") or "").strip() not in ("", "0.00"))
+    scored_cer = _frac(lambda r: (r.get("whisper_cer") or "").strip() != "")
+    skipped_reason = _frac(lambda r: (r.get("reason") or "") == "qc_skipped")
+
+    if skipped_reason > 0.05 or scored_snr < 0.95:
+        observed = "skipped"
+    elif scored_cer < 0.95:
+        observed = "no_whisper"
+    else:
+        observed = "full"
+
+    # The sidecar is a claim; the report is evidence. Evidence wins when they
+    # disagree, otherwise a stale/forged sidecar launders a passthrough corpus.
+    order = {"skipped": 0, "missing": 0, "no_whisper": 1, "full": 2}
+    if claimed and order.get(claimed, 0) > order.get(observed, 0):
+        return observed
+    return claimed or observed
 
 
 def iter_data_rows(train_csv: Path):
@@ -111,19 +132,29 @@ def _terminator_ratio_from_csv(train_csv: Path) -> tuple[float, int, float]:
     """Sentence-terminated share, row count, and total hours from a train CSV."""
     from hindi_tts_builder.data.cue_merge import ends_with_terminator
 
-    n = term = 0
+    import math
+
+    n = term = ragged = bad_dur = 0
     hours = 0.0
     for row in iter_data_rows(train_csv):
         if len(row) < 4:
+            ragged += 1
             continue
         n += 1
         if ends_with_terminator(row[1]):
             term += 1
         try:
-            hours += float(row[3])
+            v = float(row[3])
         except ValueError:
-            pass
-    return (term / n if n else 0.0), n, hours / 3600.0
+            bad_dur += 1
+            continue
+        # nan/inf silently defeated every duration comparison: a 16-second corpus
+        # passed a 1-hour gate because `nan < min_hours` is False.
+        if not math.isfinite(v) or v < 0:
+            bad_dur += 1
+            continue
+        hours += v
+    return (term / n if n else 0.0), n, hours / 3600.0, ragged, bad_dur
 
 
 def check_corpus(
@@ -146,7 +177,7 @@ def check_corpus(
         res.blockers.append(f"no training CSV at training_set/{name} — run `prepare` first")
         return _finalize(res, force)
 
-    ratio, n_rows, hours = _terminator_ratio_from_csv(train_csv)
+    ratio, n_rows, hours, ragged, bad_dur = _terminator_ratio_from_csv(train_csv)
     res.stats["csv"] = name
     res.stats["clips"] = n_rows
     res.stats["hours"] = f"{hours:.2f}"
@@ -154,6 +185,17 @@ def check_corpus(
 
     if n_rows == 0:
         res.blockers.append(f"training_set/{name} has no usable rows")
+    if ragged:
+        res.blockers.append(
+            f"{ragged} malformed row(s) in training_set/{name} have fewer than 4 columns. "
+            f"They were excluded from every statistic above, so the numbers describe only "
+            f"the {n_rows} well-formed rows and overstate corpus health."
+        )
+    if bad_dur:
+        res.blockers.append(
+            f"{bad_dur} row(s) have a missing, negative, or non-finite duration. "
+            f"Non-finite values defeat every duration comparison silently."
+        )
 
     if hours < min_hours:
         res.blockers.append(f"only {hours:.2f}h of training audio (need >= {min_hours}h)")
@@ -225,10 +267,11 @@ def check_corpus(
     for row in iter_data_rows(train_csv):
         if len(row) < 3:
             continue
-        if checked_audio < 400:  # sampled: a full stat() sweep over 10k clips is slow
-            checked_audio += 1
-            if not (paths.root / row[0]).exists():
-                missing_audio += 1
+        # Every row, not a 400-row prefix: a corpus whose first 400 clips exist
+        # and whose remaining 1,600 are dangling used to pass cleanly.
+        checked_audio += 1
+        if not (paths.root / row[0]).exists():
+            missing_audio += 1
         bad_chars |= untrainable_chars(row[2])
     if missing_audio:
         res.blockers.append(

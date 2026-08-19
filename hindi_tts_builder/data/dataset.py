@@ -66,6 +66,39 @@ def build_training_set(
             f"QC report not found at {qc_report}. Run `quality_filter` first."
         )
 
+    # Honour source exclusions. This stage used to read only the QC report and
+    # never the manifest, so `sources --exclude` was silently undone by the next
+    # dataset rebuild and every clip of an excluded source came back.
+    active: set[str] | None = None
+    manifest_path = paths.sources / "manifest.json"
+    if manifest_path.exists():
+        from hindi_tts_builder.data.manifest import Manifest
+
+        m = Manifest(manifest_path)
+        excluded = {s.id for s in m.sources if s.excluded}
+        if excluded:
+            active = {s.id for s in m.active()}
+            log.info(f"excluding {len(excluded)} source(s) from the training set: {sorted(excluded)}")
+
+    # A QC report older than the clips it describes is stale: `resegment` recuts
+    # audio under the same clip ids, so a stale row hands the new clip the OLD
+    # duration and an inherited pass — text describing more audio than the clip
+    # contains, which is exactly the defect this pipeline exists to prevent.
+    try:
+        qc_mtime = qc_report.stat().st_mtime
+        newest_clip = max(
+            (p.stat().st_mtime for p in paths.aligned.rglob("*.wav")), default=0.0
+        )
+        if newest_clip > qc_mtime + 1.0:
+            raise RuntimeError(
+                f"qc_report.csv is older than the clips it describes "
+                f"(report {qc_mtime:.0f} < newest clip {newest_clip:.0f}). Clips were recut "
+                f"after QC ran, so every duration and pass/fail in it belongs to different "
+                f"audio. Re-run QC before building the training set."
+            )
+    except FileNotFoundError:
+        pass
+
     frontend = frontend or HindiFrontend()
 
     splits: dict[str, list[DatasetRow]] = {"train": [], "val": [], "test": []}
@@ -74,6 +107,8 @@ def build_training_set(
         reader = csv.DictReader(f)
         for row in reader:
             if row["passed"] != "1":
+                continue
+            if active is not None and row.get("source_id") not in active:
                 continue
             clip_id = row["clip_id"]
             source_id = row["source_id"]

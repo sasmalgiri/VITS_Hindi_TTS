@@ -225,7 +225,30 @@ def split_words_into_sentences(
                 stats["attached_short"] += 1
                 i += 2
             else:
-                stats["dropped_short"] += 1
+                # Never delete. A short unit that cannot attach forward is tried
+                # backward, and failing that is kept so the duration filter in
+                # segment.py rejects it visibly as n_rejected. Silently dropping
+                # it discarded complete, correctly-bounded sentences — the exact
+                # data the corpus is short of — with nothing downstream reading
+                # the counter that recorded it.
+                if merged and (u.end_sec - merged[-1].start_sec) <= max_seconds \
+                        and (u.start_sec - merged[-1].end_sec) <= max_gap_seconds:
+                    prev = merged[-1]
+                    gap_back = max(0.0, u.start_sec - prev.end_sec)
+                    merged[-1] = MergedCue(
+                        start_sec=prev.start_sec,
+                        end_sec=u.end_sec,
+                        text=f"{prev.text} {u.text}".strip(),
+                        terminated=u.terminated,
+                        split_at_clause=prev.split_at_clause or u.split_at_clause,
+                        interior_gap_sec=prev.interior_gap_sec + u.interior_gap_sec + gap_back,
+                        max_interior_gap_sec=max(prev.max_interior_gap_sec,
+                                                 u.max_interior_gap_sec, gap_back),
+                    )
+                    stats["attached_short"] += 1
+                else:
+                    merged.append(u)
+                    stats["kept_short"] = stats.get("kept_short", 0) + 1
                 i += 1
         units = merged
 

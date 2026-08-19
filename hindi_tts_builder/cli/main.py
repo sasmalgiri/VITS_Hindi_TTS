@@ -455,6 +455,25 @@ def resegment_cmd(name: str, segmentation_mode: str, force: bool, rebuild_datase
     if s["sources_conflicted"]:
         _echo_err(f"{s['sources_conflicted']} source(s) skipped as policy conflicts — rerun with --force")
     if rebuild_dataset:
+        # Recut clips invalidate the QC report: same clip ids, different audio.
+        # Re-score before rebuilding, or the dataset inherits durations and
+        # pass/fail verdicts belonging to audio that no longer exists.
+        from hindi_tts_builder.data.pipeline import write_qc_meta
+        from hindi_tts_builder.data.qc import quality_filter
+
+        qc_cfg = cfg["qc"]
+        _echo_info("re-running QC (recut clips invalidate the previous report)")
+        quality_filter(
+            paths, manifest,
+            min_snr_db=qc_cfg["min_snr_db"],
+            max_cer_vs_whisper=qc_cfg["max_cer_vs_whisper"],
+            max_silence_ratio=qc_cfg["max_silence_ratio"],
+            min_seconds=cfg["clip_min_seconds"],
+            max_seconds=cfg["clip_max_seconds"],
+            use_whisper=True,
+            language=cfg.get("language", "hi"),
+        )
+        write_qc_meta(paths, "full", thresholds=dict(qc_cfg))
         d = build_training_set(paths, frontend=HindiFrontend(apply_prosody=False))
         _echo_ok(f"rebuilt training set: {d}")
     _echo_info(f"Next: hindi-tts-builder gate {name}")
@@ -828,7 +847,12 @@ def train(name: str, prepare_only: bool, backend: str, skip_gate: bool):
     except SystemExit:
         raise
     except Exception as e:
-        _echo_info(f"(gate check unavailable: {e})")
+        # Never fall through to the trainer. A typo in the gate config used to
+        # raise here, print one informational line, and start training anyway —
+        # the safety net silently removed by a misspelled key.
+        _echo_err(f"Pre-train gate could not be evaluated: {type(e).__name__}: {e}")
+        _echo_info("Fix config.yaml's `gate:` section, or re-run with --skip-gate to override.")
+        sys.exit(1)
 
     try:
         Backend = get_backend(backend)

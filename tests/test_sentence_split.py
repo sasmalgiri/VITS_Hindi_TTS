@@ -124,11 +124,27 @@ class TestLengthDiscipline:
         assert units[0].text == "हाँ। फिर वह गया।"
         assert stats["attached_short"] == 1
 
-    def test_short_unit_dropped_when_far_away(self):
+    def test_short_unit_is_kept_not_deleted_when_it_cannot_attach(self):
+        """Silently deleting a short unit discards a complete sentence.
+
+        It must survive to the duration filter in segment.py, which rejects it
+        visibly, rather than vanishing into a counter nothing reads.
+        """
         w = words(("हाँ।", 0.0, 0.4), ("बहुत", 30.0, 30.5), ("बाद", 30.6, 31.0), ("में।", 31.1, 32.5))
         units, stats = split_words_into_sentences(w, min_seconds=1.5, max_gap_seconds=0.6)
-        assert stats["dropped_short"] == 1
-        assert len(units) == 1
+        assert stats.get("dropped_short", 0) == 0
+        assert len(units) == 2
+        assert "हाँ।" in " ".join(u.text for u in units)
+
+    def test_no_text_is_ever_lost_to_the_short_pass(self):
+        w, t = [], 0.0
+        for _ in range(200):
+            for j in range(4):
+                w.append(Word(text=("शब्द" if j < 3 else "अंत।"), start=round(t, 3), end=round(t + 0.3, 3)))
+                t += 0.35
+            t += 0.6                      # pause wider than max_gap_seconds
+        units, _ = split_words_into_sentences(w, min_seconds=2.0, max_seconds=15.0, max_gap_seconds=0.4)
+        assert sum(len(u.text.split()) for u in units) == len(w)
 
 
 class TestEdges:
