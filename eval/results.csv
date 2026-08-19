@@ -1,0 +1,2 @@
+model,backend,data_hours,steps,mean_cer,rtf,manual_mos,long_form_stable,date,notes
+vits_v4_step4900,coqui-vits,16.34,4900,,0.303,,,2026-04-26,baseline; 29/29 samples; CPU RTF; samples in baseline_v4_step4900/samples

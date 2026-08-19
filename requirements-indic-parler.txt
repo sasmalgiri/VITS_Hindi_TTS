@@ -1,0 +1,23 @@
+git+https://github.com/huggingface/parler-tts.git
+accelerate>=0.31.0
+# datasets 3.x and 4.x dropped support for custom dataset scripts
+# (the IndicParlerLocalDataset class in our exporter's indic_parler_dataset.py).
+# Pin to 2.x until either upstream parler-tts adopts the new dataset API
+# or our exporter is rewritten to emit raw HF datasets.
+datasets>=2.20.0,<3.0
+transformers>=4.44.0
+soundfile>=0.12.1
+torchaudio>=2.3.0
+jiwer>=3.0.4
+# Parler's training/run_parler_tts_training.py imports these unconditionally
+# even when their feature flags are off (compute_clap_similarity_metric=False,
+# report_to="none"). Pinning them here so first-time setup doesn't fail with
+# ModuleNotFoundError mid-launch.
+wandb
+evaluate
+nltk
+tensorboardX
+# Voice-library multi-speaker training: peft adds LoRA support so each
+# speaker is a ~50 MB adapter on top of one shared base Parler model
+# (vs ~3.5 GB per voice for full fine-tuning).
+peft>=0.10.0
