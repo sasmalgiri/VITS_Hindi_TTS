@@ -54,7 +54,9 @@ class TestParse:
 
     def test_crlf_tolerated(self, tmp_path: Path):
         f = tmp_path / "test.srt"
-        f.write_text(SAMPLE_SRT.replace("\n", "\r\n"), encoding="utf-8")
+        # write_bytes, not write_text: on Windows the text path translates "\n"
+        # again, producing "\r\r\n" and defeating the point of the test.
+        f.write_bytes(SAMPLE_SRT.replace("\n", "\r\n").encode("utf-8"))
         cues = parse_srt(f)
         assert len(cues) == 3
 

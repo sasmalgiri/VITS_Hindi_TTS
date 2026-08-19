@@ -93,8 +93,17 @@ def download_audio(
     recoverable.
     """
     log = logger or get_logger("data.download", paths.logs / "download.log")
-    yt_dlp = _find_yt_dlp()
-    _find_ffmpeg()  # verify available; yt-dlp needs it
+
+    # Resolved lazily: a project whose audio is already on disk (restored from
+    # backup, hardlinked from another project, or simply already fetched) must
+    # not need yt-dlp installed just to be told there is nothing to download.
+    _tools: dict = {}
+
+    def tools() -> str:
+        if "yt_dlp" not in _tools:
+            _tools["yt_dlp"] = _find_yt_dlp()
+            _find_ffmpeg()  # verify available; yt-dlp needs it
+        return _tools["yt_dlp"]
 
     summary = {"downloaded": 0, "skipped": 0, "failed": 0, "total": len(manifest)}
 
@@ -111,7 +120,7 @@ def download_audio(
 
         log.info(f"[download] {src.id} ← {src.url}")
         try:
-            _download_one(src.url, target, yt_dlp)
+            _download_one(src.url, target, tools())
             src.audio_path = str(target.relative_to(paths.root))
             src.duration_sec = _probe_duration(target)
             src.status.downloaded = True

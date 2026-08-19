@@ -27,7 +27,19 @@ _CONSONANTS = set(
 )
 
 # Vowel signs (matras). If present after a consonant, there's no schwa to delete.
-_MATRAS = set("ािीुूृेैोौंःँ")
+# Every Devanagari dependent vowel sign, not a hand-picked subset. The original
+# list omitted U+0949 ॉ (candra-O) and its neighbours, so `_has_inherent_schwa`
+# judged "क" in "ब्लॉक" to be unmarked, inserted a virama, and emitted
+# consonant+virama+vowel-sign sequences like ब्ल्ॉक / ज़्ॉम्बी. Those stay inside
+# U+0900-U+097F, so the trainer's pre-flight check passes and the malformed text
+# is learned rather than rejected — 744 occurrences across 705 clips here.
+_MATRAS = set(
+    "".join(chr(c) for c in range(0x093A, 0x094D))      # ऺ..ौ  (all vowel signs)
+    + "".join(chr(c) for c in range(0x094E, 0x0950))    # ॎ ॏ
+    + "".join(chr(c) for c in range(0x0955, 0x0958))    # ॕ ॖ ॗ
+    + "".join(chr(c) for c in range(0x0962, 0x0964))    # ॢ ॣ
+    + "ऀँंः"                        # candrabindu, anusvara, visarga
+)
 
 # Halant (virama) — explicitly suppresses schwa
 _HALANT = "\u094d"

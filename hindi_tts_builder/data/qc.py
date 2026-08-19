@@ -19,6 +19,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import csv
+from concurrent.futures import ThreadPoolExecutor
 import os
 import time
 import unicodedata
@@ -74,23 +75,43 @@ class _LazyWhisper:
             return
         self._tried = True
         try:
-            from faster_whisper import WhisperModel  # type: ignore
+            import faster_whisper as fw  # type: ignore
             import torch  # type: ignore
             device = "cuda" if torch.cuda.is_available() else "cpu"
-            # Defaults sized for 12 GB shared with a Windows desktop.
-            # Override via env vars when more headroom is available.
-            default_compute = "int8_float16" if device == "cuda" else "int8"
+            # On a dedicated 12 GB card there is no reason to run int8: fp16 is
+            # both faster and more accurate, and CER is the measurement the whole
+            # gate rests on. Fall back to int8 only when the GPU is small or absent.
+            if device == "cuda":
+                free_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
+                default_compute = "float16" if free_gb >= 10 else "int8_float16"
+            else:
+                default_compute = "int8"
             compute = os.environ.get("HTTS_QC_WHISPER_COMPUTE", default_compute)
             model_name = os.environ.get("HTTS_QC_WHISPER_MODEL", "medium")
-            self.model = WhisperModel(model_name, device=device, compute_type=compute)
+            self.model = fw.WhisperModel(model_name, device=device, compute_type=compute)
+
+            # Batched inference keeps the GPU fed. One clip per call left the card
+            # at ~3% utilisation while 16k short clips crawled through serially.
+            self.batched = None
+            if device == "cuda" and hasattr(fw, "BatchedInferencePipeline"):
+                try:
+                    self.batched = fw.BatchedInferencePipeline(model=self.model)
+                    self.batch_size = int(os.environ.get("HTTS_QC_BATCH", "16"))
+                except Exception:
+                    self.batched = None
         except ImportError:
             self.model = None
+            self.batched = None
 
     def transcribe(self, wav_path: Path) -> str | None:
         self._load()
         if self.model is None:
             return None
-        segments, _ = self.model.transcribe(str(wav_path), language=self.language, beam_size=1)
+        engine = getattr(self, "batched", None) or self.model
+        kwargs = {"language": self.language, "beam_size": 1}
+        if engine is not self.model:
+            kwargs["batch_size"] = getattr(self, "batch_size", 16)
+        segments, _ = engine.transcribe(str(wav_path), **kwargs)
         return " ".join(s.text for s in segments).strip()
 
 
@@ -104,6 +125,7 @@ def quality_filter(
     min_seconds: float = 1.5,
     max_seconds: float = 15.0,
     use_whisper: bool = True,
+    workers: int | None = None,
     language: str = "hi",
     logger=None,
 ) -> dict:
@@ -127,7 +149,7 @@ def quality_filter(
 
     # Pre-count total clips so we can log progress as N/total with an ETA.
     total_clips = 0
-    for src in manifest:
+    for src in manifest.active():
         if not src.status.segmented:
             continue
         clip_dir = paths.aligned / src.id
@@ -138,71 +160,70 @@ def quality_filter(
     progress_every = max(50, total_clips // 50) if total_clips else 50
     t_started = time.time()
 
-    for src in manifest:
+    # Build the work list, then score in parallel. read_wav/numpy and the
+    # CTranslate2 backend all release the GIL, so this keeps the GPU fed and the
+    # CPU cores busy instead of leaving both idle one clip at a time.
+    work: list[tuple[str, str, Path, Path]] = []
+    for src in manifest.active():
         if not src.status.segmented:
             continue
         clip_dir = paths.aligned / src.id
         if not clip_dir.exists():
             continue
         for clip_wav in sorted(clip_dir.glob(f"{src.id}_c*.wav")):
-            clip_id = clip_wav.stem
             clip_txt = clip_wav.with_suffix(".txt")
-            if not clip_txt.exists():
-                continue
+            if clip_txt.exists():
+                work.append((clip_wav.stem, src.id, clip_wav, clip_txt))
+
+    if whisper is not None:
+        whisper._load()  # load once, before threads race for it
+
+    def _score(job):
+        clip_id, source_id, clip_wav, clip_txt = job
+        try:
+            audio, sr = read_wav(clip_wav)
+        except Exception as e:
+            log.warning(f"[skip] {clip_id}: cannot read wav ({e})")
+            return None
+
+        duration = len(audio) / sr
+        snr = compute_snr_db(audio)
+        silr = silence_ratio(audio)
+
+        passed, reason, fail_key = True, "ok", None
+        if duration < min_seconds or duration > max_seconds:
+            passed, reason, fail_key = False, f"duration {duration:.2f}s out of [{min_seconds}, {max_seconds}]", "failed_duration"
+        elif snr < min_snr_db:
+            passed, reason, fail_key = False, f"snr {snr:.1f}dB < {min_snr_db}dB", "failed_snr"
+        elif silr > max_silence_ratio:
+            passed, reason, fail_key = False, f"silence {silr:.2f} > {max_silence_ratio}", "failed_silence"
+
+        cer: float | None = None
+        if passed and whisper is not None:
+            hypothesis = whisper.transcribe(clip_wav)
+            if hypothesis is not None:
+                cer = _cer(clip_txt.read_text(encoding="utf-8"), hypothesis)
+                if cer > max_cer_vs_whisper:
+                    passed, reason, fail_key = False, f"cer {cer:.3f} > {max_cer_vs_whisper}", "failed_cer"
+
+        return ClipQC(clip_id=clip_id, source_id=source_id, duration=duration,
+                      snr_db=snr, silence_ratio=silr, whisper_cer=cer,
+                      passed=passed, reason=reason), fail_key
+
+    n_workers = workers or max(1, min(8, (os.cpu_count() or 4)))
+    log.info(f"[qc] scoring {len(work)} clip(s) with {n_workers} worker(s)"
+             f"{' + whisper CER' if whisper is not None else ' (no whisper)'}")
+    with ThreadPoolExecutor(max_workers=n_workers) as pool:
+        for out in pool.map(_score, work):
             summary["total"] += 1
-
-            try:
-                audio, sr = read_wav(clip_wav)
-            except Exception as e:
-                log.warning(f"[skip] {clip_id}: cannot read wav ({e})")
+            if out is None:
                 continue
-
-            duration = len(audio) / sr
-            snr = compute_snr_db(audio)
-            silr = silence_ratio(audio)
-
-            passed = True
-            reason = "ok"
-
-            if duration < min_seconds or duration > max_seconds:
-                passed = False
-                reason = f"duration {duration:.2f}s out of [{min_seconds}, {max_seconds}]"
-                summary["failed_duration"] += 1
-            elif snr < min_snr_db:
-                passed = False
-                reason = f"snr {snr:.1f}dB < {min_snr_db}dB"
-                summary["failed_snr"] += 1
-            elif silr > max_silence_ratio:
-                passed = False
-                reason = f"silence {silr:.2f} > {max_silence_ratio}"
-                summary["failed_silence"] += 1
-
-            cer: float | None = None
-            if passed and whisper is not None:
-                reference = clip_txt.read_text(encoding="utf-8")
-                hypothesis = whisper.transcribe(clip_wav)
-                if hypothesis is not None:
-                    cer = _cer(reference, hypothesis)
-                    if cer > max_cer_vs_whisper:
-                        passed = False
-                        reason = f"cer {cer:.3f} > {max_cer_vs_whisper}"
-                        summary["failed_cer"] += 1
-
-            if passed:
+            row, fail_key = out
+            rows.append(row)
+            if fail_key:
+                summary[fail_key] += 1
+            if row.passed:
                 summary["passed"] += 1
-
-            rows.append(ClipQC(
-                clip_id=clip_id,
-                source_id=src.id,
-                duration=duration,
-                snr_db=snr,
-                silence_ratio=silr,
-                whisper_cer=cer,
-                passed=passed,
-                reason=reason,
-            ))
-
-            # Periodic progress with rate + ETA
             if total_clips and (summary["total"] % progress_every == 0 or summary["total"] == total_clips):
                 elapsed = time.time() - t_started
                 rate = summary["total"] / elapsed if elapsed > 0 else 0
@@ -213,8 +234,10 @@ def quality_filter(
                     f"passed={summary['passed']} rate={rate:.1f}/s eta={int(remaining)}s"
                 )
 
-        src.status.qc_passed = True
-        manifest.save()
+    for src in manifest.active():
+        if src.status.segmented:
+            src.status.qc_passed = True
+    manifest.save()
 
     # Write report
     with report_path.open("w", encoding="utf-8", newline="") as f:

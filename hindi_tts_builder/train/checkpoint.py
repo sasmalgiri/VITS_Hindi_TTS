@@ -25,6 +25,8 @@ import shutil
 
 
 _CKPT_RE = re.compile(r"^ckpt_step_(\d+)\.pt$")
+_COQUI_BEST_RE = re.compile(r"^best_model_(\d+)\.pth$")
+_COQUI_CKPT_RE = re.compile(r"^checkpoint_(\d+)\.pth$")
 
 
 def list_checkpoints(checkpoint_dir: Path) -> list[tuple[int, Path]]:
@@ -40,10 +42,56 @@ def list_checkpoints(checkpoint_dir: Path) -> list[tuple[int, Path]]:
     return sorted(out, key=lambda t: t[0])
 
 
+def list_coqui_checkpoints(checkpoint_dir: Path) -> dict[str, list[tuple[int, Path]]]:
+    """Find Coqui's checkpoints anywhere under `checkpoint_dir` (it nests one
+    timestamped run-dir deep). Returns {"best": [(step, path)...], "ckpt": [...]}
+    each sorted ascending by step. Skips `_archive*` subtrees so manually-quarantined
+    NaN-poisoned checkpoints aren't picked up.
+
+    Note: this function still sorts by step number. Callers that need to
+    pick across-run resume points should use mtime instead — see
+    `latest_checkpoint()` for why.
+    """
+    out: dict[str, list[tuple[int, Path]]] = {"best": [], "ckpt": []}
+    if not checkpoint_dir.exists():
+        return out
+    for p in checkpoint_dir.rglob("*.pth"):
+        if any(part.startswith("_archive") for part in p.parts):
+            continue
+        mb = _COQUI_BEST_RE.match(p.name)
+        mc = _COQUI_CKPT_RE.match(p.name)
+        if mb:
+            out["best"].append((int(mb.group(1)), p))
+        elif mc:
+            out["ckpt"].append((int(mc.group(1)), p))
+    out["best"].sort(key=lambda t: t[0])
+    out["ckpt"].sort(key=lambda t: t[0])
+    return out
+
+
 def latest_checkpoint(checkpoint_dir: Path) -> Path | None:
-    """Return the most-recent step's checkpoint path, or None."""
-    ckpts = list_checkpoints(checkpoint_dir)
-    return ckpts[-1][1] if ckpts else None
+    """Return a path to resume/export from, or None.
+
+    Resolution order:
+      1. Our own ckpt_step_*.pt (legacy from-scratch trainer).
+      2. Coqui's best_model_*.pth — picked by **most recent mtime**, NOT by
+         highest step number. Without this, a fresh run that resumed from
+         best_model_7350.pth would still see 7350 as "latest" forever (since
+         no in-run BEST step exceeds 7350 until ~step 8000+) — and exports
+         would ship the v3-era pre-resume weights. Coqui writes BESTs
+         atomically (temp + rename), so mtime = creation time. Skips
+         `_archive*` subtrees.
+      3. Coqui's checkpoint_*.pth (most recent mtime) only if no BEST exists.
+    """
+    ours = list_checkpoints(checkpoint_dir)
+    if ours:
+        return ours[-1][1]
+    coqui = list_coqui_checkpoints(checkpoint_dir)
+    if coqui["best"]:
+        return max((p for _, p in coqui["best"]), key=lambda p: p.stat().st_mtime)
+    if coqui["ckpt"]:
+        return max((p for _, p in coqui["ckpt"]), key=lambda p: p.stat().st_mtime)
+    return None
 
 
 def save_checkpoint(

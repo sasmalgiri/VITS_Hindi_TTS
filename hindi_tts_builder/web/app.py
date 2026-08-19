@@ -262,6 +262,18 @@ def create_app(projects_root: Path):
             return {"running": False, "state": None}
         return {"running": st.running, "state": st.to_dict()}
 
+    @app.get("/api/projects/{name}/health")
+    def health(name: str):
+        """Training health snapshot: status, NaN counts, step velocity, loss
+        history (for sparklines). Read-only tail-parse over studio_run.log;
+        cheap enough to poll every 5s.
+        """
+        from hindi_tts_builder.web.health import analyze, to_dict
+        st = registry.get(name)
+        log_path = st.log_path if st else (projects_root / name / "logs" / "studio_run.log")
+        snap = analyze(Path(log_path), is_running=bool(st and st.running))
+        return to_dict(snap)
+
     @app.get("/api/projects/{name}/logs")
     async def stream_logs(name: str, request: Request, tail: int = 200):
         """Stream live log lines via SSE.

@@ -183,6 +183,74 @@ def _register_formatter():
         pass
 
 
+def _install_nan_guard(model, log, *, max_consecutive: int = 5) -> None:
+    """Wrap `model.train_step` so a NaN/Inf loss does not poison the optimizer.
+
+    h_tts_1 v3 silently burned 16 h of GPU time (steps 8350 → 83500) producing
+    pure NaN losses after `loss_kl` overflowed once. The default Coqui trainer
+    has no NaN check — it kept stepping the optimizer with NaN gradients,
+    which permanently zeroed the weights and there was no recovery.
+
+    This guard:
+      - intercepts (outputs, loss_dict) returned by train_step
+      - if any loss is NaN/Inf, replaces it with a tiny constant so .backward()
+        still runs but contributes no real gradient
+      - tracks consecutive bad steps; raises RuntimeError after `max_consecutive`
+        in a row so the run dies loud instead of silently spinning
+      - logs every bad step at WARNING so the studio log shows the problem
+
+    Closure state lives in the function attributes so it persists across calls
+    without polluting the module.
+    """
+    import torch  # type: ignore
+
+    original = model.train_step
+    state = {"consecutive": 0, "total_bad": 0}
+
+    def _is_bad(v):
+        if not torch.is_tensor(v):
+            return False
+        if v.dtype not in (torch.float16, torch.bfloat16, torch.float32, torch.float64):
+            return False
+        return bool(torch.isnan(v).any() or torch.isinf(v).any())
+
+    def guarded_train_step(*args, **kwargs):
+        out = original(*args, **kwargs)
+        # Coqui's train_step returns (outputs_dict, loss_dict)
+        if not (isinstance(out, tuple) and len(out) == 2 and isinstance(out[1], dict)):
+            return out
+        outputs, loss_dict = out
+        bad_keys = [k for k, v in loss_dict.items() if _is_bad(v)]
+        if not bad_keys:
+            state["consecutive"] = 0
+            return out
+
+        state["consecutive"] += 1
+        state["total_bad"] += 1
+        log.warning(
+            f"[nan-guard] step has NaN/Inf in {bad_keys} "
+            f"(consecutive={state['consecutive']}, total={state['total_bad']}). "
+            "Replacing with zero-grad placeholder."
+        )
+        if state["consecutive"] >= max_consecutive:
+            raise RuntimeError(
+                f"NaN guard tripped: {state['consecutive']} consecutive bad steps. "
+                f"Last bad keys: {bad_keys}. "
+                "Aborting so the run does not silently waste GPU. "
+                "Check optimizer LR / mixed_precision / data anomalies."
+            )
+        # Replace bad loss tensors with a no-op zero that still has a grad path
+        for k in bad_keys:
+            v = loss_dict[k]
+            zero = torch.zeros_like(v) if torch.is_tensor(v) else torch.tensor(0.0)
+            # Preserve grad attachment by multiplying out the bad value
+            loss_dict[k] = zero
+        return outputs, loss_dict
+
+    model.train_step = guarded_train_step
+    log.info(f"[nan-guard] installed on model.train_step (max_consecutive={max_consecutive})")
+
+
 class Trainer:
     """Project-scoped trainer.
 
@@ -339,7 +407,16 @@ class Trainer:
             save_n_checkpoints=tc.keep_last_n_checkpoints,
             print_step=50,
             log_model_step=tc.sample_every_steps,
-            mixed_precision=(tc.mixed_precision != "none"),
+            # AMP toggle. Coqui's VitsConfig has TWO knobs:
+            #   - mixed_precision: bool (whether to use AMP at all)
+            #   - precision: "fp16" | "bf16" (which dtype when AMP is on)
+            # Default in TrainingConfig is now "none" (fp32) because h_tts_1 v3
+            # NaN-collapsed under fp16: GradScaler kept halving on inf in
+            # loss_kl/loss_duration, scale → ~5e-44, optimizer stepped on NaN
+            # gradients, weights permanently frozen. fp32 is ~25% slower but
+            # stable. NaN-guard below is defense-in-depth if you re-enable AMP.
+            mixed_precision=(tc.mixed_precision in ("fp16", "bf16")),
+            precision=(tc.mixed_precision if tc.mixed_precision in ("fp16", "bf16") else "fp16"),
             lr_gen=tc.optim.learning_rate_gen,
             lr_disc=tc.optim.learning_rate_disc,
             grad_clip=[tc.optim.grad_clip_norm, tc.optim.grad_clip_norm],
@@ -372,13 +449,33 @@ class Trainer:
         TrainerArgs = coqui["TrainerArgs"]
         CoquiTrainer = coqui["CoquiTrainer"]
 
+        # `continue_path` makes Coqui reload the *exact* run dir (tensorboard,
+        # optimizer state, etc.). `restore_path` initializes model weights from
+        # a single .pth and starts a NEW run dir.
+        #
+        # We use restore_path-only because:
+        #   1. Coqui's get_last_checkpoint(continue_path) only scans one level
+        #      deep, but our BEST sits inside a timestamped subdir
+        #      `checkpoints/<run_name>-<date>-<sha>/best_model_*.pth`. So
+        #      passing the parent crashes with "No models found in continue path".
+        #   2. After a NaN-collapse, the OLD run's optimizer state is corrupted —
+        #      reloading it would re-poison v4. Starting fresh with just the
+        #      BEST weights is what we actually want.
         args = TrainerArgs(
-            continue_path=str(self.paths.checkpoints) if restore_path else "",
             restore_path=str(restore_path) if restore_path else "",
         )
+        if restore_path:
+            self.log.info(f"[resume] starting fresh run dir, weights init from {restore_path.name}")
+        else:
+            self.log.info("[resume] no checkpoint found — training from scratch")
 
         Vits = coqui["Vits"]
         model = Vits.init_from_config(config)
+
+        # Wrap model.train_step so a NaN/Inf loss does not poison the optimizer.
+        # Without this, h_tts_1 v3 silently spun for 16 hours producing pure
+        # NaN losses after a single duration-loss overflow. See _install_nan_guard.
+        _install_nan_guard(model, self.log, max_consecutive=5)
 
         # Pre-load samples and pass them in. CoquiTrainer's internal data-loader
         # path expects samples to already be on the trainer instance; without

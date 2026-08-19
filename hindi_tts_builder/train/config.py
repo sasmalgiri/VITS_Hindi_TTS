@@ -75,7 +75,10 @@ class TrainingConfig:
     max_steps: int = 150_000             # was 500k; ~18 h on RTX 3060 to a usable model
     epochs: int = 10_000                 # effectively uncapped; max_steps is the real limit
     seed: int = 1234
-    mixed_precision: str = "bf16"        # "bf16", "fp16", or "none"
+    mixed_precision: str = "none"        # "bf16", "fp16", or "none". Default "none" because
+                                         # h_tts_1 v3 NaN-collapsed at step 8350 with fp16 GradScaler
+                                         # underflowing on KL/duration losses. fp32 is ~25% slower
+                                         # but stable. Re-enable per-project once a NaN-guard is proven.
     num_workers: int = 8                 # was 4; user has 12 CPUs; faster data loading
 
     # Sequence limits

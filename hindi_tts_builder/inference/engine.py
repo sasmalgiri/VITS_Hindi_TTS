@@ -42,6 +42,8 @@ class GenerationResult:
     processed_text: str
     validation: ValidationResult | None
     retries: int
+    manual_review: bool = False
+    tactics_tried: list[str] | None = None
 
 
 class TTSEngine:
@@ -107,8 +109,16 @@ class TTSEngine:
             raise FileNotFoundError(f"tokenizer.json missing from engine folder")
         tokenizer = HindiTokenizer.load(tok_path)
 
-        # Frontend: recreate with same feature flags and pronunciation dict
+        # Frontend: recreate with same feature flags and pronunciation dict.
+        # Fail-closed if the manifest declares a dict is required but the
+        # file is missing — silent fallback hid bugs in earlier runs.
         dict_path = engine_dir / "pronunciation_dict.json"
+        if getattr(manifest, "pronunciation_dict_required", False) and not dict_path.exists():
+            raise FileNotFoundError(
+                f"manifest.pronunciation_dict_required=True but {dict_path} is missing. "
+                "Either ship the dict with the engine bundle, or flip the manifest "
+                "flag to False if the dict is genuinely optional."
+            )
         frontend = HindiFrontend(
             dictionary_path=dict_path if dict_path.exists() else None,
             apply_schwa_deletion=manifest.frontend.apply_schwa_deletion,
@@ -211,16 +221,28 @@ class TTSEngine:
         if not processed:
             raise ValueError("Frontend produced empty text — check input")
 
+        # Build the retry tactic chain once. Each tactic mutates the input
+        # text in a different way; the seed is also bumped between attempts.
+        # Order: cheap/conservative first (seed re-roll), destructive last
+        # (last-sentence-only). See inference/retry_tactics.py.
+        from hindi_tts_builder.inference.retry_tactics import default_tactics
+        dict_for_tactics = getattr(self.frontend, "_dictionary", None) \
+            or getattr(self.frontend, "dictionary", None)
+        tactics = default_tactics(dictionary=dict_for_tactics)
+
         attempt = 0
         last_validation: ValidationResult | None = None
         audio: "np.ndarray" | None = None
+        tactics_tried: list[str] = []
+        manual_review = False
+        current_text = text
+        current_processed = processed
 
         while attempt <= self.roundtrip_retries:
             if seed is not None:
                 self._set_seed(seed + attempt)
 
-            # Coqui Synthesizer.tts() returns a list[float] of waveform samples
-            waveform = self._model.tts(processed)
+            waveform = self._model.tts(current_processed)
             audio = np.asarray(waveform, dtype=np.float32)
 
             if not validate or self.validator is None or not self.validator.available:
@@ -228,27 +250,53 @@ class TTSEngine:
                 break
 
             last_validation = self.validator.validate(
-                expected_text=text,
+                expected_text=current_text,
                 audio=audio,
                 sample_rate=self.manifest.sample_rate,
             )
             if last_validation.passed:
                 break
-            _log.warning(
-                f"[retry {attempt + 1}/{self.roundtrip_retries}] validation failed: {last_validation.reason}"
-            )
+
+            # Plan the next attempt: pick tactics[attempt] for the upcoming
+            # iteration. Note attempt=0 has just synthesised the plain text and
+            # failed validation; tactics[0] (seed_only) is a no-op transform
+            # that re-rolls the seed for attempt=1. tactics[1] (extra_normalize)
+            # mutates text for attempt=2, and so on. Default roundtrip_retries=2
+            # exercises the first two tactics; raise it (e.g. on TTSEngine.load)
+            # to enable apply_dict_aggressive (idx 2) and shorten_long (idx 3).
+            if attempt < len(tactics):
+                tactic = tactics[attempt]
+                mutated = tactic.transform(text)
+                if mutated and mutated != current_text:
+                    current_text = mutated
+                    current_processed = self._process_text(mutated)
+                tactics_tried.append(tactic.name)
+                _log.warning(
+                    f"[retry {attempt + 1}/{self.roundtrip_retries}] validation failed "
+                    f"({last_validation.reason}); next tactic: {tactic.name}"
+                )
+            else:
+                _log.warning(
+                    f"[retry {attempt + 1}/{self.roundtrip_retries}] validation failed; "
+                    "no more tactics — flagging for manual_review."
+                )
             attempt += 1
 
         if audio is None:
             raise RuntimeError("Audio generation failed")
 
+        if last_validation is not None and not last_validation.passed:
+            manual_review = True
+
         result = GenerationResult(
             audio=audio,
             sample_rate=self.manifest.sample_rate,
             expected_text=text,
-            processed_text=processed,
+            processed_text=current_processed,
             validation=last_validation,
             retries=attempt,
+            manual_review=manual_review,
+            tactics_tried=tactics_tried or None,
         )
 
         if output is not None:

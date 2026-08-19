@@ -120,6 +120,37 @@
 
   .loss-grid { margin-top: 10px; background: #11151c; border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
   .loss-grid h3 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px; color: var(--muted); font-weight: 600; margin: 0 0 6px 0; }
+  /* ===== Training Health panel ===== */
+  .health-panel { margin-top: 14px; background: #0e1117; border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
+  .health-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .health-pill { display: inline-flex; align-items: center; gap: 8px; padding: 6px 14px; border-radius: 999px; font-weight: 600; font-size: 13px; letter-spacing: 0.3px; }
+  .health-pill .dot { width: 9px; height: 9px; border-radius: 50%; box-shadow: 0 0 0 2px rgba(0,0,0,0.3); }
+  .health-pill.healthy { background: #103820; color: #6ce69a; } .health-pill.healthy .dot { background: #4cd97d; box-shadow: 0 0 8px #4cd97d; }
+  .health-pill.starting { background: #1a2438; color: #80b6ff; } .health-pill.starting .dot { background: #5b8dee; }
+  .health-pill.stalled  { background: #3b2a10; color: #f3c160; } .health-pill.stalled .dot  { background: #f3a930; box-shadow: 0 0 8px #f3a930; }
+  .health-pill.nan_collapse { background: #3b1010; color: #ff7878; } .health-pill.nan_collapse .dot { background: #ff4d4d; box-shadow: 0 0 10px #ff4d4d; }
+  .health-pill.done     { background: #1a242a; color: #99c5d9; } .health-pill.done .dot { background: #6aa9c0; }
+  .health-pill.no_run   { background: #1c1c20; color: #8a8d95; } .health-pill.no_run .dot { background: #8a8d95; }
+  .health-reason { font-size: 12px; color: var(--muted); }
+  .health-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin-top: 12px; }
+  .health-stat { background: #161a22; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
+  .health-stat .label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.4px; color: var(--muted); }
+  .health-stat .value { font-size: 18px; font-weight: 600; color: #e7eaef; margin-top: 2px; }
+  .health-stat .sub   { font-size: 10px; color: var(--muted); margin-top: 1px; }
+  .health-stat.warn .value { color: #f3c160; }
+  .health-stat.bad  .value { color: #ff7878; }
+  .health-alarms { margin-top: 12px; padding: 8px 10px; background: #2a1a14; border: 1px solid #5a3528; border-radius: 6px; font-size: 12px; color: #f3a980; }
+  .health-alarms ul { margin: 4px 0 0 18px; padding: 0; }
+  .health-explain { margin-top: 14px; padding: 10px 12px; background: #11151c; border: 1px dashed var(--border); border-radius: 8px; font-size: 12px; color: var(--muted); line-height: 1.55; }
+  .health-explain b { color: #c9d1d9; }
+  .spark-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin-top: 12px; }
+  .spark-card { background: #161a22; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
+  .spark-card .name { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.4px; display: flex; justify-content: space-between; }
+  .spark-card .name .v { color: #e7eaef; font-weight: 600; text-transform: none; letter-spacing: 0; }
+  .spark-card svg { display: block; margin-top: 4px; }
+  .spark-card .floor { font-size: 10px; color: var(--muted); margin-top: 2px; }
+  .spark-card.under-floor .name .v { color: #4cd97d; }
+  .spark-card.diverging  .name .v { color: #ff7878; }
   .loss-row { display: grid; grid-template-columns: 110px 70px 1fr 70px; gap: 10px; align-items: center; font-family: var(--mono); font-size: 11px; padding: 2px 0; }
   .loss-row .lk { color: var(--muted); }
   .loss-row .lv { color: var(--text); text-align: right; }
@@ -265,6 +296,26 @@
           </div>
         </div>
         <div class="train-bar"><div class="fill" id="maturity_fill" style="background: linear-gradient(90deg, var(--accent-2), var(--accent));"></div></div>
+      </div>
+
+      <div class="health-panel" id="health_panel" style="display:none;">
+        <div class="health-head">
+          <span class="health-pill" id="health_pill"><span class="dot"></span><span id="health_pill_text">unknown</span></span>
+          <span class="health-reason" id="health_reason"></span>
+        </div>
+        <div class="health-stats" id="health_stats"></div>
+        <div class="health-alarms" id="health_alarms" style="display:none;"></div>
+        <div class="spark-grid" id="health_sparklines"></div>
+        <div class="health-explain">
+          <b>Quick reading guide.</b>
+          The big pill above is the bottom line: <b>green</b> = training is alive and producing real numbers, <b>yellow</b> = something looks off (slow, or one bad batch),
+          <b>red</b> = NaN-collapse or a 3+ minute stall (the run should be stopped).
+          The mini-cards show the six VITS loss components from the latest validation pass — <b>lower is closer to a usable voice</b>.
+          Each card lists its target floor (e.g. <i>kl → 1.5</i>); the sparkline shows the recent trend across recent training steps (left = older, right = newer).
+          A <b>NaN counter &gt; 0</b> means at least one batch produced an invalid number — one is tolerable, &gt;5 in a row triggers the auto-abort guard.
+          <b>BEST</b> is the most recent checkpoint where validation improved on its previous best — that's the one inference uses.
+          <b>Steps/min</b> tells you whether the GPU is still doing work; if it drops to zero or stays under 1, training is effectively frozen.
+        </div>
       </div>
 
       <div class="loss-grid" id="loss_grid_wrap" style="display:none;">
@@ -1213,6 +1264,154 @@ $('stop_btn').onclick = async () => {
 refreshProjects();
 setInterval(() => { if (SELECTED) refreshDetail(); }, 5000);
 setInterval(refreshProjects, 10000);
+
+// =================================================================
+// Training Health panel — polls /api/projects/{name}/health every 5s.
+// Renders a status pill, key stats, alarms, and 6 sparklines so the
+// user can tell at a glance whether training is alive, slow, NaN-
+// collapsed, or stalled — without reading raw logs.
+// =================================================================
+const HEALTH_FLOORS = { mel: 12.0, kl: 1.5, gen: 1.8, disc: 2.4, feat: 2.0, duration: 1.0 };
+const HEALTH_LABELS = {
+  mel: 'mel-spec L1',
+  kl: 'KL divergence',
+  gen: 'generator GAN',
+  disc: 'discriminator',
+  feat: 'feature-match',
+  duration: 'duration pred.',
+};
+const HEALTH_HINTS = {
+  mel: 'how close synth spectrogram is to truth',
+  kl: 'latent-space alignment',
+  gen: 'generator vs discriminator',
+  disc: 'discriminator confidence',
+  feat: 'intermediate-layer match',
+  duration: 'phoneme timing accuracy',
+};
+const STATUS_TEXT = {
+  healthy: 'Training healthy',
+  starting: 'Starting',
+  stalled: 'STALLED',
+  nan_collapse: 'NaN COLLAPSE',
+  done: 'Run finished',
+  no_run: 'No run',
+};
+
+function renderSparkline(history, key, floor) {
+  // history: [{step, ts, mel, kl, gen, disc, feat, duration}, ...]
+  const W = 150, H = 30, PAD = 2;
+  const vals = history.map(r => r[key]).filter(v => v !== null && v !== undefined && Number.isFinite(v));
+  if (vals.length < 2) return `<svg width="${W}" height="${H}"></svg>`;
+  const min = Math.min(...vals, floor);
+  const max = Math.max(...vals, floor * 1.05);
+  const range = (max - min) || 1;
+  const xs = (i) => PAD + i * (W - PAD * 2) / (vals.length - 1);
+  const ys = (v) => H - PAD - ((v - min) / range) * (H - PAD * 2);
+  const pts = vals.map((v, i) => `${xs(i).toFixed(1)},${ys(v).toFixed(1)}`).join(' ');
+  const floorY = ys(floor).toFixed(1);
+  const last = vals[vals.length - 1];
+  const trendClr = last > floor * 5 ? '#ff7878' : (last <= floor ? '#4cd97d' : '#5b8dee');
+  return `<svg width="${W}" height="${H}">
+    <line x1="0" y1="${floorY}" x2="${W}" y2="${floorY}" stroke="#333a44" stroke-dasharray="2,2" />
+    <polyline fill="none" stroke="${trendClr}" stroke-width="1.6" points="${pts}" />
+  </svg>`;
+}
+
+function renderHealthPanel(h) {
+  if (!h || h.status === 'no_run') {
+    $('health_panel').style.display = 'none';
+    return;
+  }
+  $('health_panel').style.display = 'block';
+
+  // Status pill
+  const pill = $('health_pill');
+  pill.className = 'health-pill ' + h.status;
+  $('health_pill_text').textContent = STATUS_TEXT[h.status] || h.status;
+  $('health_reason').textContent = h.status_reason || '';
+
+  // Key stats grid
+  const stats = [];
+  const stepStr = h.last_step ? h.last_step.toLocaleString() : '?';
+  stats.push({ label: 'Last step', value: stepStr,
+               sub: h.last_step_at || '' });
+  stats.push({ label: 'Steps / min',
+               value: h.steps_per_min !== null && h.steps_per_min !== undefined ? h.steps_per_min.toFixed(1) : '—',
+               sub: 'GPU throughput',
+               cls: (h.steps_per_min !== null && h.steps_per_min < 1) ? 'warn' : '' });
+  stats.push({ label: 'Last BEST', value: h.last_best_step || '—',
+               sub: 'most recent improved checkpoint' });
+  stats.push({ label: 'NaN steps (last 100)',
+               value: h.nan_steps_recent_100 || 0,
+               sub: 'invalid-loss batches; 5+ in a row aborts',
+               cls: (h.nan_steps_recent_100 > 0) ? 'bad' : '' });
+  stats.push({ label: 'NaN-guard fired',
+               value: h.nan_guard_warnings || 0,
+               sub: 'how many times the safety net caught NaN',
+               cls: (h.nan_guard_warnings > 0) ? 'warn' : '' });
+  stats.push({ label: 'Step samples',
+               value: h.samples_used || 0,
+               sub: 'data points for this snapshot' });
+
+  $('health_stats').innerHTML = stats.map(s => `
+    <div class="health-stat ${s.cls || ''}">
+      <div class="label">${escapeHtml(s.label)}</div>
+      <div class="value">${escapeHtml(String(s.value))}</div>
+      <div class="sub">${escapeHtml(s.sub || '')}</div>
+    </div>`).join('');
+
+  // Alarms
+  if (h.alarms && h.alarms.length > 0) {
+    $('health_alarms').style.display = 'block';
+    $('health_alarms').innerHTML =
+      '<b>⚠ Active alarms</b><ul>' +
+      h.alarms.map(a => '<li>' + escapeHtml(a) + '</li>').join('') +
+      '</ul>';
+  } else {
+    $('health_alarms').style.display = 'none';
+  }
+
+  // Sparklines: one per loss component, with the latest eval-average value
+  // as the headline number (eval averages are smoothed; per-step values
+  // bounce wildly between epochs).
+  const cards = Object.keys(HEALTH_FLOORS).map(k => {
+    const floor = HEALTH_FLOORS[k];
+    const evalVal = h.last_eval_avg ? h.last_eval_avg[k] : null;
+    let cls = '';
+    if (evalVal !== null && evalVal !== undefined) {
+      if (evalVal <= floor) cls = 'under-floor';
+      else if (evalVal > floor * 5) cls = 'diverging';
+    }
+    const valDisplay = (evalVal !== null && evalVal !== undefined && Number.isFinite(evalVal))
+      ? evalVal.toFixed(2) : '—';
+    return `
+      <div class="spark-card ${cls}">
+        <div class="name"><span>${escapeHtml(k)}</span><span class="v">${valDisplay}</span></div>
+        ${renderSparkline(h.loss_history || [], k, floor)}
+        <div class="floor">${escapeHtml(HEALTH_LABELS[k] || k)} · target ≤ ${floor} · ${escapeHtml(HEALTH_HINTS[k] || '')}</div>
+      </div>`;
+  }).join('');
+  $('health_sparklines').innerHTML = cards;
+}
+
+async function pollHealth() {
+  if (!SELECTED) return;
+  try {
+    const h = await api('/api/projects/' + SELECTED + '/health');
+    renderHealthPanel(h);
+  } catch (e) {
+    // Endpoint missing or transient error — don't spam console.
+  }
+}
+setInterval(pollHealth, 5000);
+// Also fire once when a project is selected, so the panel populates immediately.
+const _origSelectProject = typeof selectProject === 'function' ? selectProject : null;
+if (_origSelectProject) {
+  selectProject = function(name) {
+    _origSelectProject(name);
+    setTimeout(pollHealth, 200);
+  };
+}
 </script>
 </body>
 </html>

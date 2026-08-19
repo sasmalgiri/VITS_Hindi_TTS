@@ -39,6 +39,11 @@ class EngineManifest:
     sample_rate: int = 24000
     model_type: str = "vits"
     frontend: EngineFrontendSpec = field(default_factory=EngineFrontendSpec)
+    # If true, pronunciation_dict.json MUST exist in the engine folder at load
+    # time. The dict is the only way to lock down fantasy/foreign-name renderings
+    # for dubbing — a silent fallback to "no dict" is what got us the v3-style
+    # quiet-failure bugs. Default False for backwards compat with older engines.
+    pronunciation_dict_required: bool = False
 
     @classmethod
     def load(cls, path: Path) -> "EngineManifest":

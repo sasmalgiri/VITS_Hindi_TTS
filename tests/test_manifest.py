@@ -87,3 +87,38 @@ class TestManifest:
         m.add(url="https://youtu.be/abc123xyz", transcript_path="t2.srt", index=1)
         ids = {s.id for s in m.sources}
         assert len(ids) == 2
+
+
+class TestExclusion:
+    """A source can be dropped from training without deleting its data."""
+
+    def test_active_skips_excluded(self, tmp_path):
+        m = Manifest(tmp_path / "m.json")
+        a = m.add(url="https://youtu.be/aaaaaaaaaaa")
+        b = m.add(url="https://youtu.be/bbbbbbbbbbb")
+        assert len(m.active()) == 2
+        b.excluded = True
+        assert [s.id for s in m.active()] == [a.id]
+        assert len(m) == 2, "excluded sources stay in the manifest"
+
+    def test_excluded_survives_round_trip(self, tmp_path):
+        p = tmp_path / "m.json"
+        m = Manifest(p)
+        s = m.add(url="https://youtu.be/ccccccccccc")
+        s.excluded = True
+        m.save()
+        assert Manifest(p).sources[0].excluded is True
+
+    def test_defaults_to_included(self, tmp_path):
+        m = Manifest(tmp_path / "m.json")
+        assert m.add(url="https://youtu.be/ddddddddddd").excluded is False
+
+    def test_old_manifest_without_field_loads(self, tmp_path):
+        p = tmp_path / "m.json"
+        p.write_text(
+            '{"sources": [{"id": "s1", "url": "u", "transcript_path": "t.srt"}]}',
+            encoding="utf-8",
+        )
+        m = Manifest(p)
+        assert m.sources[0].excluded is False
+        assert len(m.active()) == 1
